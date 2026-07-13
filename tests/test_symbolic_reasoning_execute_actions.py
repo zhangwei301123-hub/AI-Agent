@@ -6,6 +6,7 @@ from symbolic_reasoning import (
     ActionValidationError,
     ReasoningFacts,
     SymbolicReasoningAgent,
+    TargetDomain,
     execute_actions,
     validate_actions_dict,
 )
@@ -19,15 +20,24 @@ class ExecuteActionsTests(unittest.TestCase):
     def setUp(self):
         facts = ReasoningFacts(
             entity_id=ENTITY_ID,
+            own_platform_type=TargetDomain.AIR,
             target_id=TARGET_ID,
+            target_domain=TargetDomain.AIR,
+            detected_target_count=1,
             attack_authorized=True,
             target_type_allowed=True,
             weapon_available=True,
+            compatible_weapon_count=2,
             within_attack_range=True,
+            distance_km=50.0,
+            max_attack_range_km=100.0,
             aimed_at_target=True,
+            heading_difference_deg=10.0,
             safety_clearance=True,
+            concurrency_slot_available=True,
             target_lon=120.1,
             target_lat=30.2,
+            attack_altitude_level=3,
         )
         self.actions_dict = {
             ENTITY_ID: SymbolicReasoningAgent().reason(facts).actions
@@ -69,4 +79,3 @@ class ExecuteActionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

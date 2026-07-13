@@ -1,67 +1,112 @@
-# 简单符号推理智能体
+# 符号推理智能算法
 
-目录包含三个核心文件：
+本目录实现 `rule.md` 中已经确认的业务规则：
 
-- `entity.py`：读取新接口的 `data.data.UnitList`，编码文档规定的实体字段；
-- `agent.py`：按规则推出返航、攻击、追击、搜索或保持；
-- `execute_actions.py`：校验 8×5 动作矩阵并调用根目录执行接口；
-- `symbolic_reasoning4test.py`：类似 `maddpg4test.py` 的运行环境和循环。
+- 5 km 来袭导弹识别和固定右转 90° 规避；
+- 按目标域选择射程、库存校验、攻击高度和期望武器类型；
+- 距离等于最大射程时允许提交攻击请求；
+- 只有飞机允许超距追击，进入射程后重新推理；
+- 飞机和潜艇需要严格小于 30°，水面舰艇免除朝向限制；
+- 攻击范围内最近合法目标优先；
+- 同一目标最多 3 个攻击者，命中或成功发射后 10 分钟释放；
+- 同一导弹目标生命周期内累计最多 4 发拦截弹；
+- 巡逻机在含边界的巡逻区内、距海面 0～500 m 时部署浮标。
 
-```python
-from symbolic_reasoning import ReasoningFacts, SymbolicReasoningAgent
+## 文件
 
-agent = SymbolicReasoningAgent()
-facts = ReasoningFacts(
-    entity_id="our-aircraft-0001",
-    target_id="enemy-aircraft-0001",
-    attack_authorized=True,
-    target_type_allowed=True,
-    weapon_available=True,
-    within_attack_range=True,
-    aimed_at_target=True,
-    safety_clearance=True,
-    target_lon=120.1,
-    target_lat=30.2,
-)
+- `entity.py`：读取 `data.data.UnitList`，编码字段、库存、任务、武器目标链路和删除反馈；
+- `agent.py`：匹配规则、输出结论和逐条推理路径，并生成 8×5 Actor 动作矩阵；
+- `state.py`：维护并发攻击槽位、10 分钟超时和累计拦截弹数量；
+- `execute_actions.py`：校验动作并复用根目录 `execute.execute_actions`；
+- `symbolic_reasoning4test.py`：类似 `maddpg4test.py` 的运行入口，默认实际执行；
+- `acceptance.py`：自动执行正确性、覆盖性、可解释性和性能测试。
 
-decision = agent.reason(facts)
-print(decision.conclusion)   # ATTACK
-print(decision.explanation)  # 规则编号、结论和依据
-
-# 真正连接仿真并复用 execute.execute_actions：
-result = agent.run([facts], enemy_ids=[facts.target_id])
-```
-
-使用 `source/我方视角下态势完整响应.txt` 跑完整链路。默认会完成推理并实际
-调用执行接口：
+## 默认推理并实际执行
 
 ```powershell
 python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
 ```
 
-执行链为 `agent → symbolic_reasoning.execute_actions → execute.execute_actions`。
-如果只需要检查推理结果而不下发命令，必须显式使用：
+执行链为：
+
+```text
+态势编码 → 事实校验 → 最近合法目标 → 规则匹配 → 推理路径
+        → 8×5 动作矩阵 → symbolic_reasoning.execute_actions
+        → execute.execute_actions → 系统执行反馈
+```
+
+> 注意：符号推理动作矩阵会正确写入高度/速度等级，但当前根目录
+> `execute.py` 的航路和高度速度执行分支仍将两者固定为等级 4。若仿真系统必须
+> 实际采用等级 0/1/3/5，需要另行修改公共执行层；本目录未擅自改变神经算法共用接口。
+
+如果只检查推理结果、不向仿真系统下发命令，必须显式使用：
 
 ```powershell
 python -m symbolic_reasoning.symbolic_reasoning4test --steps 1 --dry-run
 ```
 
-编码向量共有 21 个字段，顺序由 `entity.FEATURE_NAMES` 固定，包括阵营、接触目标、
-武器标志、实体枚举、目标域、经纬高、航向、速度、血量、探测/打击范围、通信、
-干扰和可操纵标志。打击范围采用接口文档规定的公里单位。
+## 弹药字段
 
-测试：
+算法读取运行态势中可选的 `weaponNumber`：
+
+```json
+{
+  "airNum": 4,
+  "shipNum": 2,
+  "subNum": 1,
+  "landNum": 0,
+  "buoyNum": 6
+}
+```
+
+只使用数量判断是否允许发射，不能指定具体武器；真正的武器选择交由系统。
+如果态势缺少对应库存数量，算法按 0 处理并安全拒绝攻击，不使用最大射程冒充弹药数量。
+
+## 巡逻任务区域
+
+浮标规则需要任务类型和巡逻区域。可以在实体中提供 `missionId`、`missionType`，
+并通过 `--mission-areas` 加载任务区域：
+
+```json
+{
+  "mission-patrol-1": {
+    "is_patrol": true,
+    "area_points": [
+      [120.0, 30.0],
+      [121.0, 30.0],
+      [121.0, 31.0],
+      [120.0, 31.0]
+    ]
+  }
+}
+```
+
+```powershell
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --mission-areas source/mission_areas.json `
+  --steps 1
+```
+
+多边形边界视为巡逻区域内，高度直接采用系统反馈的实体 `altitude`。
+
+## 测试
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-自动执行甲方要求的四项测试：
+甲方四项自动验收：
 
 ```powershell
 python -m symbolic_reasoning.acceptance
 ```
 
-该命令一次完成：9 个正确性用例、512 种输入事实组合覆盖、512 种组合的
-推理路径校验，以及默认 10000 次推理的耗时和内存测试。默认门槛为
-P95 不超过 5 ms、Python 峰值分配内存不超过 16 MiB，可用命令行参数调整。
+验收内容包括：
+
+- 21 个业务正确性与边界用例；
+- 15 个标准化布尔事实的 `2^15 = 32768` 种组合全覆盖；
+- 32768 条结论的规则编号、证据和推理路径检查；
+- 默认 10000 次推理的耗时和 Python 峰值分配内存测试。
+
+默认性能门槛为 P95 不超过 5 ms、峰值分配内存不超过 16 MiB，可通过
+`--max-p95-ms` 和 `--max-memory-mib` 调整。

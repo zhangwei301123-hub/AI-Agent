@@ -103,6 +103,7 @@ class SymbolicReasoningEnvironmentTests(unittest.TestCase):
                             "rangeStrike_Surface": 0,
                             "rangeStrike_Land": 0,
                             "rangeStrike_Submarine": 0,
+                            "weaponNumber": {"airNum": 2},
                             "CommText": "",
                             "JammText": ""
                         },
@@ -139,9 +140,13 @@ class SymbolicReasoningEnvironmentTests(unittest.TestCase):
             executor=fake_execute,
         )
 
-        self.assertEqual(result.decisions[own_id].conclusion.value, "ATTACK")
+        self.assertEqual(
+            result.decisions[own_id].conclusion.value,
+            "REQUEST_ATTACK",
+        )
         self.assertEqual(captured["enemy_ids"], [target_id])
         self.assertEqual(captured["actions_dict"][own_id][4][1], target_id)
+        self.assertEqual(result.execution_status[own_id], "SUCCESS")
 
 
 if __name__ == "__main__":

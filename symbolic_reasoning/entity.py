@@ -1,4 +1,4 @@
-"""对三维态势 ``SendMsg.UnitList`` 进行字段校验和数值编码。"""
+"""对三维态势 SendMsg.UnitList 做字段校验、关联解析和数值编码。"""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ import math
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 
 
 class TargetDomain(IntEnum):
-    """用于选择对应打击距离的目标域。"""
+    """目标域，同时作为平台类型的统一编码。"""
 
     AIR = 0
     SURFACE = 1
@@ -22,13 +22,14 @@ class TargetDomain(IntEnum):
     UNKNOWN = 4
 
 
-# 字段均来自 source/态势数据字段说明.md 的 UnitInfo。
+# 字段来自 source/态势数据字段说明.md；可选库存/任务字段兼容现有运行数据。
 FEATURE_NAMES: Tuple[str, ...] = (
     "is_own",
     "is_contact",
     "is_weapon",
     "unit_type",
     "unit_category",
+    "unit_specific_type",
     "target_domain",
     "longitude_deg",
     "latitude_deg",
@@ -42,9 +43,17 @@ FEATURE_NAMES: Tuple[str, ...] = (
     "range_strike_land_km",
     "range_strike_submarine_km",
     "range_fly_max_km",
+    "weapon_impact",
+    "weapon_target_distance_km",
+    "weapon_count_air",
+    "weapon_count_surface",
+    "weapon_count_land",
+    "weapon_count_submarine",
+    "sonobuoy_count",
     "communication_ok",
     "radar_jammed",
     "commandable",
+    "has_patrol_mission",
 )
 
 
@@ -61,19 +70,28 @@ def _integer(value: Any, default: int = -1) -> int:
     return int(number) if number != float(default) else default
 
 
+def _first_number(mapping: Mapping[str, Any], names: Sequence[str]) -> int:
+    for name in names:
+        if name in mapping:
+            return max(0, _integer(mapping.get(name), 0))
+    return 0
+
+
 @dataclass(frozen=True)
 class EncodedEntity:
-    """保留符号推理所需的实体字段和对应编码。"""
+    """保留符号推理所需的实体字段和固定顺序编码。"""
 
     entity_id: str
     contact_id: Optional[str]
     name: str
+    unit_name: str
     side_id: str
     is_own: bool
     is_contact: bool
     is_weapon: bool
     unit_type: int
     unit_category: int
+    unit_specific_type: int
     domain: TargetDomain
     longitude: float
     latitude: float
@@ -87,6 +105,17 @@ class EncodedEntity:
     range_strike_land_km: float
     range_strike_submarine_km: float
     range_fly_max_km: float
+    weapon_impact: int
+    weapon_target_distance_km: float
+    weapon_target_name: str
+    weapon_target_id: Optional[str]
+    weapon_count_air: int
+    weapon_count_surface: int
+    weapon_count_land: int
+    weapon_count_submarine: int
+    sonobuoy_count: int
+    mission_id: str
+    has_patrol_mission: bool
     communication_ok: bool
     radar_jammed: bool
     commandable: bool
@@ -95,11 +124,22 @@ class EncodedEntity:
 
     @property
     def command_id(self) -> str:
-        """己方命令使用 guid，接触目标命令优先使用 contactGuid。"""
+        """己方命令用 guid，接触目标命令优先使用 contactGuid。"""
 
         if self.is_contact and self.contact_id:
             return self.contact_id
         return self.entity_id
+
+    @property
+    def is_aircraft(self) -> bool:
+        return self.domain is TargetDomain.AIR and not self.is_weapon
+
+    @property
+    def is_patrol_aircraft(self) -> bool:
+        if not self.is_aircraft:
+            return False
+        text = " ".join((self.name, self.unit_name, self.icon_2d)).lower()
+        return self.has_patrol_mission or "巡逻" in text or "patrol" in text
 
     def strike_range_for(self, target: "EncodedEntity") -> float:
         if target.domain is TargetDomain.AIR:
@@ -111,6 +151,17 @@ class EncodedEntity:
         if target.domain is TargetDomain.LAND:
             return max(0.0, self.range_strike_land_km)
         return 0.0
+
+    def weapon_count_for(self, target: "EncodedEntity") -> int:
+        if target.domain is TargetDomain.AIR:
+            return self.weapon_count_air
+        if target.domain is TargetDomain.SURFACE:
+            return self.weapon_count_surface
+        if target.domain is TargetDomain.SUBMARINE:
+            return self.weapon_count_submarine
+        if target.domain is TargetDomain.LAND:
+            return self.weapon_count_land
+        return 0
 
     def distance_to_km(self, target: "EncodedEntity") -> float:
         """计算包含高度差的近似空间距离，返回公里。"""
@@ -124,7 +175,9 @@ class EncodedEntity:
             math.sin(dlat / 2.0) ** 2
             + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2.0) ** 2
         )
-        ground_km = 2.0 * radius_km * math.asin(min(1.0, math.sqrt(value)))
+        ground_km = 2.0 * radius_km * math.asin(
+            min(1.0, math.sqrt(max(0.0, value)))
+        )
         altitude_km = (target.altitude_m - self.altitude_m) / 1000.0
         return math.hypot(ground_km, altitude_km)
 
@@ -137,6 +190,7 @@ class EncodedSituation:
     entities: Tuple[EncodedEntity, ...]
     encoded_data: np.ndarray
     mask: np.ndarray
+    deleted_entity_ids: Tuple[str, ...] = ()
 
     @property
     def own_entities(self) -> Tuple[EncodedEntity, ...]:
@@ -147,13 +201,19 @@ class EncodedSituation:
         return tuple(
             entity
             for entity in self.entities
-            # 接触目标的 BloodAmount 可能因通信/识别不足而为 0，不能据此丢弃。
+            # 接触目标的 BloodAmount 可能因通信不足为 0，不能据此丢弃。
             if not entity.is_own and (entity.is_contact or entity.health_pct != 0)
         )
 
+    def find_entity(self, entity_id: str) -> Optional[EncodedEntity]:
+        for entity in self.entities:
+            if entity_id in (entity.entity_id, entity.command_id):
+                return entity
+        return None
+
 
 class EntityEncoder:
-    """编码 ``我方视角下态势完整响应`` 中的 UnitList。"""
+    """编码我方视角完整态势，并解析武器目标链路。"""
 
     def __init__(self, max_entities: int = 700) -> None:
         if max_entities <= 0:
@@ -172,6 +232,7 @@ class EntityEncoder:
         if not own_side_id:
             raise ValueError("态势数据缺少 sideGuid，且无法从己方实体推断")
 
+        target_links = self._weapon_target_links(send_msg, units)
         encoded_data = np.full(
             (self.max_entities, self.feature_dim), -1.0, dtype=np.float32
         )
@@ -181,18 +242,23 @@ class EntityEncoder:
         for index, unit in enumerate(units[: self.max_entities]):
             if not isinstance(unit, Mapping):
                 raise ValueError("UnitList[{}] 不是对象".format(index))
-            entity = self._encode_unit(unit, own_side_id)
+            entity = self._encode_unit(unit, own_side_id, target_links)
             entities.append(entity)
             encoded_data[index] = entity.vector
             mask[index] = True
 
+        current_time = str(send_msg.get("CurrentTime") or "")
+        if not current_time and units:
+            current_time = str(units[0].get("CurrentScenarioTime") or "")
+
         return EncodedSituation(
             own_side_id=own_side_id,
             scene_name=str(send_msg.get("ScenName") or ""),
-            current_time=str(send_msg.get("CurrentTime") or ""),
+            current_time=current_time,
             entities=tuple(entities),
             encoded_data=encoded_data,
             mask=mask,
+            deleted_entity_ids=self._deleted_entity_ids(send_msg),
         )
 
     @staticmethod
@@ -202,7 +268,6 @@ class EntityEncoder:
         if not isinstance(payload, Mapping):
             raise ValueError("态势数据必须是 JSON 对象")
 
-        # 完整响应：data.sideGuid + data.data(UnitList)。
         outer_data = payload.get("data")
         if isinstance(outer_data, Mapping):
             inner_data = outer_data.get("data")
@@ -215,7 +280,6 @@ class EntityEncoder:
                 )
                 return inner_data, side_id
 
-        # 也允许调用方直接传 SendMsg。
         if "UnitList" in payload:
             side_id = str(payload.get("SideGuid") or payload.get("sideGuid") or "")
             return payload, side_id
@@ -233,7 +297,10 @@ class EntityEncoder:
         return ""
 
     def _encode_unit(
-        self, unit: Mapping[str, Any], own_side_id: str
+        self,
+        unit: Mapping[str, Any],
+        own_side_id: str,
+        target_links: Mapping[str, str],
     ) -> EncodedEntity:
         entity_id = str(unit.get("guid") or "").strip()
         if not entity_id:
@@ -247,6 +314,7 @@ class EntityEncoder:
         is_weapon = bool(unit.get("IsWeapon"))
         unit_type = _integer(unit.get("unitType"))
         unit_category = _integer(unit.get("unitCategory"))
+        unit_specific_type = _integer(unit.get("UnitSpecificType"))
         altitude_m = _number(unit.get("altitude"))
         icon_2d = str(unit.get("Icon2D") or "")
         domain = self._infer_domain(
@@ -255,11 +323,12 @@ class EntityEncoder:
             is_weapon=is_weapon,
             altitude_m=altitude_m,
             icon_2d=icon_2d,
+            unit_model=str(unit.get("unitModel") or ""),
         )
 
         longitude = _number(unit.get("longitude"))
         latitude = _number(unit.get("latitude"))
-        heading_deg = _number(unit.get("heading"))
+        heading_deg = _number(unit.get("heading"), 0.0) % 360.0
         speed = _number(unit.get("Speed"), 0.0)
         health_pct = _number(unit.get("BloodAmount"), 100.0)
         range_detect_km = _number(unit.get("rangeDetect"), 0.0)
@@ -271,11 +340,49 @@ class EntityEncoder:
         )
         range_fly_max_km = _number(unit.get("range_FlyMax"), 0.0)
 
+        inventory = unit.get("weaponNumber")
+        if not isinstance(inventory, Mapping):
+            inventory = {}
+        weapon_count_air = _first_number(
+            inventory, ("airNum", "AirNum", "airCount", "air")
+        )
+        weapon_count_surface = _first_number(
+            inventory, ("shipNum", "surfaceNum", "ShipNum", "ship")
+        )
+        weapon_count_land = _first_number(
+            inventory, ("landNum", "LandNum", "landCount", "land")
+        )
+        weapon_count_submarine = _first_number(
+            inventory, ("subNum", "submarineNum", "SubNum", "sub")
+        )
+        sonobuoy_count = _first_number(
+            inventory,
+            ("sonobuoyNum", "sonarBuoyNum", "buoyNum", "sonobuoy", "buoy"),
+        )
+        if sonobuoy_count == 0:
+            sonobuoy_count = _first_number(
+                unit,
+                ("sonobuoyNum", "sonarBuoyNum", "buoyNum", "sonobuoyCount"),
+            )
+
+        mission_id = str(unit.get("missionId") or unit.get("MissionId") or "")
+        mission_text = " ".join(
+            str(unit.get(key) or "")
+            for key in ("missionType", "MissionType", "missionName", "MissionName")
+        ).lower()
+        has_patrol_mission = bool(mission_id) and (
+            "巡逻" in mission_text or "patrol" in mission_text
+        )
+
         comm_text = str(unit.get("CommText") or "")
         jam_text = str(unit.get("JammText") or "")
         communication_ok = "通信中断" not in comm_text
         radar_jammed = "被干扰" in jam_text
-        commandable = is_own and health_pct > 0.0
+        commandable = is_own and not is_weapon and health_pct > 0.0
+        weapon_impact = max(0, _integer(unit.get("WeaponImpact"), 0))
+        weapon_target_distance_km = max(
+            0.0, _number(unit.get("WeaponTargetDistance"), 0.0)
+        )
 
         vector = np.asarray(
             [
@@ -284,6 +391,7 @@ class EntityEncoder:
                 float(is_weapon),
                 float(unit_type),
                 float(unit_category),
+                float(unit_specific_type),
                 float(domain),
                 longitude,
                 latitude,
@@ -297,9 +405,17 @@ class EntityEncoder:
                 range_strike_land_km,
                 range_strike_submarine_km,
                 range_fly_max_km,
+                float(weapon_impact),
+                weapon_target_distance_km,
+                float(weapon_count_air),
+                float(weapon_count_surface),
+                float(weapon_count_land),
+                float(weapon_count_submarine),
+                float(sonobuoy_count),
                 float(communication_ok),
                 float(radar_jammed),
                 float(commandable),
+                float(has_patrol_mission),
             ],
             dtype=np.float32,
         )
@@ -308,12 +424,14 @@ class EntityEncoder:
             entity_id=entity_id,
             contact_id=contact_id,
             name=str(unit.get("name") or unit.get("unitname") or entity_id),
+            unit_name=str(unit.get("unitname") or ""),
             side_id=side_id,
             is_own=is_own,
             is_contact=is_contact,
             is_weapon=is_weapon,
             unit_type=unit_type,
             unit_category=unit_category,
+            unit_specific_type=unit_specific_type,
             domain=domain,
             longitude=longitude,
             latitude=latitude,
@@ -327,6 +445,17 @@ class EntityEncoder:
             range_strike_land_km=range_strike_land_km,
             range_strike_submarine_km=range_strike_submarine_km,
             range_fly_max_km=range_fly_max_km,
+            weapon_impact=weapon_impact,
+            weapon_target_distance_km=weapon_target_distance_km,
+            weapon_target_name=str(unit.get("WeaponTargetName") or ""),
+            weapon_target_id=target_links.get(entity_id),
+            weapon_count_air=weapon_count_air,
+            weapon_count_surface=weapon_count_surface,
+            weapon_count_land=weapon_count_land,
+            weapon_count_submarine=weapon_count_submarine,
+            sonobuoy_count=sonobuoy_count,
+            mission_id=mission_id,
+            has_patrol_mission=has_patrol_mission,
             communication_ok=communication_ok,
             radar_jammed=radar_jammed,
             commandable=commandable,
@@ -341,10 +470,12 @@ class EntityEncoder:
         is_weapon: bool,
         altitude_m: float,
         icon_2d: str,
+        unit_model: str = "",
     ) -> TargetDomain:
-        # 我方视角样例中接触目标的 unitCategory/unitType 可能统一为 0，
-        # 因此先用同一 UnitInfo 中的 Icon2D，再使用枚举，最后用高度兜底。
         icon = icon_2d.replace("\\", "/").lower()
+        model_text = (icon + " " + unit_model).lower()
+        if "torpedo" in model_text or "鱼雷" in model_text:
+            return TargetDomain.SUBMARINE
         if "/aircraft/" in icon:
             return TargetDomain.AIR
         if "/ship/" in icon:
@@ -354,16 +485,22 @@ class EntityEncoder:
         if "/facility/" in icon or "/land/" in icon:
             return TargetDomain.LAND
 
-        if not is_weapon:
-            if unit_category == 0 or unit_type == 0:
-                return TargetDomain.AIR
-            if unit_category == 1 or unit_type in (1, 7):
-                return TargetDomain.SURFACE
-            if unit_category == 2 or unit_type == 2:
-                return TargetDomain.SUBMARINE
-            if unit_category in (3, 7) or unit_type in (3, 4, 5, 9, 10, 12):
-                return TargetDomain.LAND
+        # 普通导弹均按 AIR 目标处理；水下鱼雷由图标/型号或负高度识别。
+        if is_weapon:
+            return (
+                TargetDomain.SUBMARINE
+                if altitude_m < -1.0
+                else TargetDomain.AIR
+            )
 
+        if unit_category == 0 or unit_type == 0:
+            return TargetDomain.AIR
+        if unit_category == 1 or unit_type in (1, 7):
+            return TargetDomain.SURFACE
+        if unit_category == 2 or unit_type == 2:
+            return TargetDomain.SUBMARINE
+        if unit_category in (3, 7) or unit_type in (3, 4, 5, 9, 10, 12):
+            return TargetDomain.LAND
         if altitude_m < -1.0:
             return TargetDomain.SUBMARINE
         if altitude_m > 50.0:
@@ -371,6 +508,83 @@ class EntityEncoder:
         if altitude_m >= -1.0:
             return TargetDomain.SURFACE
         return TargetDomain.UNKNOWN
+
+    @staticmethod
+    def _weapon_target_links(
+        send_msg: Mapping[str, Any], units: Sequence[Mapping[str, Any]]
+    ) -> Dict[str, str]:
+        links: Dict[str, str] = {}
+        weapons = {
+            str(unit.get("guid"))
+            for unit in units
+            if unit.get("guid") and bool(unit.get("IsWeapon"))
+        }
+        names: Dict[str, Set[str]] = {}
+        for unit in units:
+            unit_id = str(unit.get("guid") or "")
+            for key in ("name", "unitname"):
+                name = str(unit.get(key) or "").strip()
+                if name and unit_id:
+                    names.setdefault(name, set()).add(unit_id)
+
+        radiation = send_msg.get("radiationAndDataLinkLine")
+        if not isinstance(radiation, Mapping):
+            radiation = send_msg.get("RadiationAndDataLinkLine")
+        if isinstance(radiation, Mapping):
+            raw_links = radiation.get("WeaponTarget") or []
+            if isinstance(raw_links, Sequence) and not isinstance(
+                raw_links, (str, bytes)
+            ):
+                for link in raw_links:
+                    if not isinstance(link, Mapping):
+                        continue
+                    endpoints = link.get("Arr") or link.get("arr") or []
+                    if not isinstance(endpoints, Sequence):
+                        continue
+                    endpoint_ids = [
+                        str(endpoint.get("unitguid") or endpoint.get("unitGuid") or "")
+                        for endpoint in endpoints
+                        if isinstance(endpoint, Mapping)
+                    ]
+                    weapon_id = next(
+                        (item for item in endpoint_ids if item in weapons), None
+                    )
+                    target_id = next(
+                        (
+                            item
+                            for item in endpoint_ids
+                            if item and item != weapon_id
+                        ),
+                        None,
+                    )
+                    if weapon_id and target_id:
+                        links[weapon_id] = target_id
+
+        # 当链路没有目标 ID 时，唯一匹配的 WeaponTargetName 可作为强关联。
+        for unit in units:
+            weapon_id = str(unit.get("guid") or "")
+            if weapon_id not in weapons or weapon_id in links:
+                continue
+            target_name = str(unit.get("WeaponTargetName") or "").strip()
+            candidates = names.get(target_name, set())
+            if len(candidates) == 1:
+                links[weapon_id] = next(iter(candidates))
+        return links
+
+    @staticmethod
+    def _deleted_entity_ids(send_msg: Mapping[str, Any]) -> Tuple[str, ...]:
+        result: List[str] = []
+        deleted = send_msg.get("DeleteUnitIdList") or []
+        if not isinstance(deleted, Sequence) or isinstance(deleted, (str, bytes)):
+            return ()
+        for item in deleted:
+            if isinstance(item, Mapping):
+                value = item.get("guid") or item.get("contactGuid")
+            else:
+                value = item
+            if value:
+                result.append(str(value))
+        return tuple(result)
 
 
 PathLike = Union[str, Path]
@@ -380,7 +594,7 @@ def load_situation(path: PathLike) -> Dict[str, Any]:
     """从 UTF-8 JSON 文件读取完整态势响应。"""
 
     source = Path(path)
-    with source.open("r", encoding="utf-8") as stream:
+    with source.open("r", encoding="utf-8-sig") as stream:
         payload = json.load(stream)
     if not isinstance(payload, dict):
         raise ValueError("态势文件顶层必须是 JSON 对象")

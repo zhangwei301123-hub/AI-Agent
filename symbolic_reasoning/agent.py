@@ -1,4 +1,4 @@
-"""符号推理智能体：输入事实，推出结论，并用 execute_actions 执行。"""
+"""符号推理智能体：按 rule.md 推理并生成 execute 兼容动作。"""
 
 from __future__ import annotations
 
@@ -7,55 +7,106 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .entity import TargetDomain
 
-# 与 execute.execute_actions 保持一致：每个实体有 8 个 Actor，每个 Actor 5 个参数。
+
+# 与根目录 execute.execute_actions 一致：8 个 Actor，每个 Actor 5 个参数。
 ACTOR_COUNT = 8
 ACTION_THRESHOLD = 0.9
 ACTION_DISABLED = 0.01
 
 RETURN_TO_BASE_ACTOR = 1
 WAYPOINT_ACTOR = 2
+MOBILITY_ACTOR = 3
 ATTACK_ACTOR = 4
 SENSOR_ACTOR = 5
+SONOBUOY_ACTOR = 6
 
 
 class Conclusion(str, Enum):
-    """符号推理可以得到的五种结论。"""
+    """符号推理可以输出的主结论。"""
 
-    RETURN_TO_BASE = "RETURN_TO_BASE"
-    ATTACK = "ATTACK"
-    CHASE = "CHASE"
+    EVADE_MISSILE = "EVADE_MISSILE"
+    REQUEST_ATTACK = "REQUEST_ATTACK"
+    # 兼容旧调用；新代码和解释统一使用 REQUEST_ATTACK。
+    ATTACK = "REQUEST_ATTACK"
+    CHASE_TO_RANGE = "CHASE_TO_RANGE"
+    # 兼容旧调用；新代码区分追击入射程和转向对准。
+    CHASE = "CHASE_TO_RANGE"
+    CHASE_AND_ALIGN = "CHASE_AND_ALIGN"
+    DEPLOY_SONOBUOY = "DEPLOY_SONOBUOY"
     SEARCH = "SEARCH"
     HOLD = "HOLD"
+    RETURN_TO_BASE = "RETURN_TO_BASE"
 
 
 @dataclass(frozen=True)
 class ReasoningFacts:
-    """单个实体的一组输入事实。
+    """单个实体的标准化输入事实。
 
-    安全相关事实默认均为 ``False``，因此调用方漏传事实时不会错误放行攻击。
+    危险动作相关字段默认全部关闭，调用方漏传字段时会安全拒绝。
     """
 
     entity_id: str
+    own_platform_type: TargetDomain = TargetDomain.UNKNOWN
     target_id: Optional[str] = None
-    need_return_to_base: bool = False
+    target_entity_id: Optional[str] = None
+    target_domain: TargetDomain = TargetDomain.UNKNOWN
+    target_is_missile: bool = False
+    detected_target_count: int = 0
+
+    incoming_missile: bool = False
+    incoming_missile_id: Optional[str] = None
+    incoming_missile_distance_km: float = -1.0
+    incoming_missile_heading_deg: float = 0.0
+    evade_lon: float = 0.0
+    evade_lat: float = 0.0
+
     attack_authorized: bool = False
     target_type_allowed: bool = False
     weapon_available: bool = False
+    compatible_weapon_count: int = 0
+    expected_weapon_type: Optional[str] = None
     within_attack_range: bool = False
+    distance_km: float = -1.0
+    max_attack_range_km: float = 0.0
     aimed_at_target: bool = False
+    heading_difference_deg: float = 180.0
     safety_clearance: bool = False
     chase_allowed: bool = False
+    concurrency_slot_available: bool = False
+    active_attackers_on_target: int = 0
+    already_attacking_target: bool = False
+    interceptors_launched: int = 0
+
     target_lon: float = 0.0
     target_lat: float = 0.0
-    waypoint_altitude: float = 4.0
-    waypoint_velocity: float = 4.0
+    attack_altitude_level: int = 0
+    waypoint_velocity_level: int = 4
+
+    is_patrol_aircraft: bool = False
+    has_patrol_mission: bool = False
+    inside_patrol_area: bool = False
+    altitude_above_sea_m: float = -1.0
+    sonobuoy_count: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity_id, str) or not self.entity_id.strip():
             raise ValueError("entity_id 必须是非空字符串")
-        for field_name in (
-            "need_return_to_base",
+        if self.target_id is not None and not isinstance(self.target_id, str):
+            raise ValueError("target_id 必须是字符串或 None")
+        if self.target_entity_id is not None and not isinstance(
+            self.target_entity_id, str
+        ):
+            raise ValueError("target_entity_id 必须是字符串或 None")
+        if not isinstance(self.own_platform_type, TargetDomain):
+            raise ValueError("own_platform_type 必须是 TargetDomain")
+        if not isinstance(self.target_domain, TargetDomain):
+            raise ValueError("target_domain 必须是 TargetDomain")
+
+        bool_fields = (
+            "target_is_missile",
+            "incoming_missile",
             "attack_authorized",
             "target_type_allowed",
             "weapon_available",
@@ -63,23 +114,56 @@ class ReasoningFacts:
             "aimed_at_target",
             "safety_clearance",
             "chase_allowed",
-        ):
+            "concurrency_slot_available",
+            "already_attacking_target",
+            "is_patrol_aircraft",
+            "has_patrol_mission",
+            "inside_patrol_area",
+        )
+        for field_name in bool_fields:
             if type(getattr(self, field_name)) is not bool:
                 raise ValueError("{} 必须是 bool".format(field_name))
-        for field_name in (
+
+        count_fields = (
+            "detected_target_count",
+            "compatible_weapon_count",
+            "active_attackers_on_target",
+            "interceptors_launched",
+            "sonobuoy_count",
+        )
+        for field_name in count_fields:
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("{} 必须是非负整数".format(field_name))
+
+        numeric_fields = (
+            "incoming_missile_distance_km",
+            "incoming_missile_heading_deg",
+            "evade_lon",
+            "evade_lat",
+            "distance_km",
+            "max_attack_range_km",
+            "heading_difference_deg",
             "target_lon",
             "target_lat",
-            "waypoint_altitude",
-            "waypoint_velocity",
-        ):
+            "altitude_above_sea_m",
+        )
+        for field_name in numeric_fields:
             value = getattr(self, field_name)
-            if not isinstance(value, (int, float)) or not math.isfinite(value):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise ValueError("{} 必须是有限数值".format(field_name))
+            if not math.isfinite(float(value)):
+                raise ValueError("{} 必须是有限数值".format(field_name))
+
+        if not 0 <= self.attack_altitude_level <= 5:
+            raise ValueError("attack_altitude_level 必须位于 [0, 5]")
+        if not 0 <= self.waypoint_velocity_level <= 4:
+            raise ValueError("waypoint_velocity_level 必须位于 [0, 4]")
 
 
 @dataclass(frozen=True)
 class InferenceStep:
-    """一条规则的匹配结果和当时使用的事实。"""
+    """一条规则的匹配结果和使用的事实。"""
 
     rule_id: str
     rule: str
@@ -89,7 +173,7 @@ class InferenceStep:
 
 @dataclass(frozen=True)
 class Decision:
-    """一次符号推理的结论、依据和 execute 动作。"""
+    """一次推理的结论、依据和 execute 动作。"""
 
     conclusion: Conclusion
     rule_id: str
@@ -97,6 +181,8 @@ class Decision:
     matched_facts: Tuple[str, ...]
     inference_path: Tuple[InferenceStep, ...]
     actions: List[List[Any]]
+    target_id: Optional[str] = None
+    expected_weapon_type: Optional[str] = None
 
     @property
     def explanation(self) -> str:
@@ -130,23 +216,21 @@ class RunResult:
     actions_dict: Dict[str, List[List[Any]]]
     execute_results: Any
     rewards: Any
+    execution_status: Dict[str, str]
 
 
-Executor = Callable[[Dict[str, List[List[Any]]], Sequence[str], float, Any], Tuple[Any, Any]]
+Executor = Callable[
+    [Dict[str, List[List[Any]]], Sequence[str], float, Any], Tuple[Any, Any]
+]
 
 
 class SymbolicReasoningAgent:
-    """按固定优先级执行规则并调用现有 ``execute_actions``。
-
-    规则优先级：返航 > 搜索目标 > 安全拒绝 > 攻击 > 追击 > 保持。
-    """
+    """按 rule.md 的优先级匹配规则并生成确定性动作。"""
 
     def reason(self, facts: ReasoningFacts) -> Decision:
-        """根据一组事实得到一个确定性结论。"""
-
         path: List[InferenceStep] = []
 
-        def matches(
+        def record(
             rule_id: str,
             rule: str,
             matched: bool,
@@ -162,147 +246,343 @@ class SymbolicReasoningAgent:
             )
             return matched
 
-        if matches(
-            "SR-001",
-            "需要返航时优先返航",
-            facts.need_return_to_base,
-            ("need_return_to_base={}".format(facts.need_return_to_base),),
-        ):
-            return self._decision(
-                Conclusion.RETURN_TO_BASE,
-                "SR-001",
-                "需要返航，返航优先于其他动作",
-                ("need_return_to_base=True",),
-                facts,
-                tuple(path),
-            )
-
-        if matches(
-            "SR-002",
-            "没有目标时开启搜索",
-            facts.target_id is None,
-            ("target_id={}".format(facts.target_id),),
-        ):
-            return self._decision(
-                Conclusion.SEARCH,
-                "SR-002",
-                "没有发现目标，开启雷达搜索",
-                ("target_id=None",),
-                facts,
-                tuple(path),
-            )
-
-        if matches(
-            "SR-003",
-            "无攻击权限时保持",
-            not facts.attack_authorized,
-            ("attack_authorized={}".format(facts.attack_authorized),),
-        ):
-            return self._hold(
-                "SR-003",
-                "实体没有攻击权限",
-                "attack_authorized=False",
-                facts,
-                tuple(path),
-            )
-
-        if matches(
-            "SR-004",
-            "安全约束不允许时保持",
-            not facts.safety_clearance,
-            ("safety_clearance={}".format(facts.safety_clearance),),
-        ):
-            return self._hold(
-                "SR-004",
-                "安全约束不允许攻击",
-                "safety_clearance=False",
-                facts,
-                tuple(path),
-            )
-
-        if matches(
-            "SR-005",
-            "目标类型不允许时保持",
-            not facts.target_type_allowed,
-            ("target_type_allowed={}".format(facts.target_type_allowed),),
-        ):
-            return self._hold(
-                "SR-005",
-                "目标类型不允许攻击",
-                "target_type_allowed=False",
-                facts,
-                tuple(path),
-            )
-
-        if matches(
-            "SR-006",
-            "没有可用武器时保持",
-            not facts.weapon_available,
-            ("weapon_available={}".format(facts.weapon_available),),
-        ):
-            return self._hold(
-                "SR-006",
-                "没有可用武器",
-                "weapon_available=False",
-                facts,
-                tuple(path),
-            )
-
-        attack_matched = facts.within_attack_range and facts.aimed_at_target
-        if matches(
-            "SR-007",
-            "在攻击范围内且已对准时攻击",
-            attack_matched,
+        # P1：来袭导弹规避覆盖攻击、追击和浮标部署。
+        if record(
+            "R-MSL-001",
+            "5 km 内确认或推断为直接指向本实体的敌方导弹属于来袭威胁",
+            facts.incoming_missile,
             (
-                "within_attack_range={}".format(facts.within_attack_range),
-                "aimed_at_target={}".format(facts.aimed_at_target),
+                "incoming_missile={}".format(facts.incoming_missile),
+                "missile_id={}".format(facts.incoming_missile_id),
+                "distance_km={:.3f}".format(facts.incoming_missile_distance_km),
+                "threshold_km=5",
+            ),
+        ):
+            record(
+                "R-MSL-002",
+                "固定向导弹航向右侧 90 度规避，并提高速度和高度",
+                True,
+                (
+                    "missile_heading_deg={:.3f}".format(
+                        facts.incoming_missile_heading_deg
+                    ),
+                    "evade_heading_deg={:.3f}".format(
+                        (facts.incoming_missile_heading_deg + 90.0) % 360.0
+                    ),
+                    "speed_level=4",
+                    "altitude_level=5",
+                ),
+            )
+            return self._decision(
+                Conclusion.EVADE_MISSILE,
+                "R-MSL-002",
+                "近距离来袭导弹威胁，紧急规避优先",
+                (
+                    "incoming_missile=True",
+                    "distance_km<=5",
+                    "right_turn=90deg",
+                ),
+                facts,
+                tuple(path),
+            )
+
+        has_target = facts.target_id is not None
+        record(
+            "R-TGT-001",
+            "从合法候选目标中选择最近目标",
+            has_target,
+            (
+                "target_id={}".format(facts.target_id),
+                "detected_target_count={}".format(facts.detected_target_count),
+                "distance_km={:.3f}".format(facts.distance_km),
+            ),
+        )
+
+        if has_target:
+            if record(
+                "R-VAL-001",
+                "实体必须可操纵且通信安全状态允许攻击",
+                not facts.attack_authorized or not facts.safety_clearance,
+                (
+                    "attack_authorized={}".format(facts.attack_authorized),
+                    "safety_clearance={}".format(facts.safety_clearance),
+                ),
+            ):
+                return self._hold(
+                    "R-VAL-001",
+                    "实体不可操纵或通信安全状态不允许攻击",
+                    facts,
+                    tuple(path),
+                )
+
+            concurrency_blocked = (
+                not facts.concurrency_slot_available
+                or facts.already_attacking_target
+            )
+            if record(
+                "R-CON-001",
+                "同一目标最多允许 3 个不同攻击者占用或预留并发槽位",
+                concurrency_blocked,
+                (
+                    "active_attackers={}".format(
+                        facts.active_attackers_on_target
+                    ),
+                    "limit=3",
+                    "slot_available={}".format(
+                        facts.concurrency_slot_available
+                    ),
+                    "already_attacking={}".format(
+                        facts.already_attacking_target
+                    ),
+                ),
+            ):
+                reason = (
+                    "本实体已有针对该目标的在途攻击"
+                    if facts.already_attacking_target
+                    else "同目标并发攻击槽位已满"
+                )
+                return self._hold("R-CON-001", reason, facts, tuple(path))
+
+            interceptor_blocked = (
+                facts.target_is_missile and facts.interceptors_launched >= 4
+            )
+            if record(
+                "R-INT-001",
+                "一个导弹目标生命周期内累计最多发射 4 发拦截弹",
+                interceptor_blocked,
+                (
+                    "target_is_missile={}".format(facts.target_is_missile),
+                    "interceptors_launched={}".format(
+                        facts.interceptors_launched
+                    ),
+                    "limit=4",
+                ),
+            ):
+                return self._hold(
+                    "R-INT-001",
+                    "该导弹目标的累计拦截弹数量已达 4 发",
+                    facts,
+                    tuple(path),
+                )
+
+            if record(
+                "R-RNG-001",
+                "平台必须具备目标域对应的有效最大射程",
+                not facts.target_type_allowed or facts.max_attack_range_km <= 0.0,
+                (
+                    "target_domain={}".format(facts.target_domain.name),
+                    "target_type_allowed={}".format(
+                        facts.target_type_allowed
+                    ),
+                    "max_attack_range_km={:.3f}".format(
+                        facts.max_attack_range_km
+                    ),
+                ),
+            ):
+                return self._hold(
+                    "R-RNG-001",
+                    "平台没有该目标域的有效攻击能力",
+                    facts,
+                    tuple(path),
+                )
+
+            if record(
+                self._weapon_rule_id(facts.target_domain),
+                "对应类型武器数量必须大于 0，具体武器由系统选择",
+                not facts.weapon_available or facts.compatible_weapon_count <= 0,
+                (
+                    "expected_weapon_type={}".format(
+                        facts.expected_weapon_type
+                    ),
+                    "compatible_weapon_count={}".format(
+                        facts.compatible_weapon_count
+                    ),
+                    "weapon_selection=SYSTEM",
+                ),
+            ):
+                return self._hold(
+                    self._weapon_rule_id(facts.target_domain),
+                    "对应目标域的武器数量不足",
+                    facts,
+                    tuple(path),
+                )
+
+            if not facts.within_attack_range:
+                can_chase = (
+                    facts.own_platform_type is TargetDomain.AIR
+                    and facts.chase_allowed
+                )
+                record(
+                    "R-RNG-004",
+                    "超出射程时只有飞机允许追击，且不得立即发射",
+                    can_chase,
+                    (
+                        "distance_km={:.3f}".format(facts.distance_km),
+                        "max_attack_range_km={:.3f}".format(
+                            facts.max_attack_range_km
+                        ),
+                        "own_platform={}".format(
+                            facts.own_platform_type.name
+                        ),
+                        "chase_allowed={}".format(facts.chase_allowed),
+                    ),
+                )
+                if can_chase:
+                    return self._decision(
+                        Conclusion.CHASE_TO_RANGE,
+                        "R-RNG-004",
+                        "飞机位于射程外，先追击目标，进入射程后重新推理",
+                        (
+                            "distance_km>max_attack_range_km",
+                            "own_platform=AIRCRAFT",
+                        ),
+                        facts,
+                        tuple(path),
+                    )
+                record(
+                    "R-RNG-003",
+                    "非飞机平台超出射程时禁止攻击且不允许追击",
+                    True,
+                    (
+                        "distance_km>max_attack_range_km",
+                        "own_platform={}".format(
+                            facts.own_platform_type.name
+                        ),
+                    ),
+                )
+                return self._hold(
+                    "R-RNG-003",
+                    "目标超出射程，非飞机平台不允许追击",
+                    facts,
+                    tuple(path),
+                )
+
+            aim_required = facts.own_platform_type is not TargetDomain.SURFACE
+            aim_ok = (not aim_required) or facts.aimed_at_target
+            record(
+                "R-AIM-001" if not aim_required else "R-AIM-002",
+                "水面舰艇免除朝向限制；飞机和潜艇必须严格小于 30 度",
+                aim_ok,
+                (
+                    "own_platform={}".format(facts.own_platform_type.name),
+                    "heading_difference_deg={:.3f}".format(
+                        facts.heading_difference_deg
+                    ),
+                    "limit_deg=<30",
+                ),
+            )
+            if not aim_ok:
+                if (
+                    facts.own_platform_type is TargetDomain.AIR
+                    and facts.chase_allowed
+                ):
+                    return self._decision(
+                        Conclusion.CHASE_AND_ALIGN,
+                        "R-AIM-002",
+                        "飞机在射程内但未对准，先转向目标再重新推理",
+                        ("heading_difference_deg>=30", "own_platform=AIRCRAFT"),
+                        facts,
+                        tuple(path),
+                    )
+                return self._hold(
+                    "R-AIM-002",
+                    "平台未满足严格小于 30 度的攻击朝向条件",
+                    facts,
+                    tuple(path),
+                )
+
+            weapon_rule = self._weapon_rule_id(facts.target_domain)
+            record(
+                weapon_rule,
+                "射程、朝向、并发和弹药条件均满足，向系统提交发射请求",
+                True,
+                (
+                    "distance_km={:.3f}".format(facts.distance_km),
+                    "max_attack_range_km={:.3f}".format(
+                        facts.max_attack_range_km
+                    ),
+                    "heading_difference_deg={:.3f}".format(
+                        facts.heading_difference_deg
+                    ),
+                    "compatible_weapon_count={}".format(
+                        facts.compatible_weapon_count
+                    ),
+                ),
+            )
+            return self._decision(
+                Conclusion.REQUEST_ATTACK,
+                weapon_rule,
+                "所有攻击约束通过，具体武器由系统自动选择",
+                (
+                    "within_attack_range=True",
+                    "aimed_at_target=True_or_surface_ship_exempt",
+                    "concurrency_slot_available=True",
+                    "weapon_available=True",
+                ),
+                facts,
+                tuple(path),
+            )
+
+        buoy_allowed = (
+            facts.is_patrol_aircraft
+            and facts.has_patrol_mission
+            and facts.inside_patrol_area
+            and 0.0 <= facts.altitude_above_sea_m <= 500.0
+            and facts.sonobuoy_count > 0
+        )
+        if record(
+            "R-BUOY-001",
+            "巡逻机在含边界的巡逻区内且距海面 0 至 500 m 时允许部署浮标",
+            buoy_allowed,
+            (
+                "is_patrol_aircraft={}".format(facts.is_patrol_aircraft),
+                "has_patrol_mission={}".format(facts.has_patrol_mission),
+                "inside_patrol_area={}".format(facts.inside_patrol_area),
+                "altitude_above_sea_m={:.3f}".format(
+                    facts.altitude_above_sea_m
+                ),
+                "sonobuoy_count={}".format(facts.sonobuoy_count),
             ),
         ):
             return self._decision(
-                Conclusion.ATTACK,
-                "SR-007",
-                "攻击条件全部满足",
+                Conclusion.DEPLOY_SONOBUOY,
+                "R-BUOY-001",
+                "巡逻任务、区域、高度和浮标数量条件均满足",
                 (
-                    "attack_authorized=True",
-                    "safety_clearance=True",
-                    "target_type_allowed=True",
-                    "weapon_available=True",
-                    "within_attack_range=True",
-                    "aimed_at_target=True",
+                    "patrol_aircraft=True",
+                    "inside_patrol_area=True",
+                    "0<=altitude_above_sea_m<=500",
+                    "sonobuoy_count>0",
                 ),
                 facts,
                 tuple(path),
             )
 
-        if matches(
-            "SR-008",
-            "不能立即攻击但允许追击时机动",
-            facts.chase_allowed,
-            ("chase_allowed={}".format(facts.chase_allowed),),
-        ):
-            return self._decision(
-                Conclusion.CHASE,
-                "SR-008",
-                "暂不满足攻击条件，允许向目标机动",
-                (
-                    "within_attack_range={}".format(facts.within_attack_range),
-                    "aimed_at_target={}".format(facts.aimed_at_target),
-                    "chase_allowed=True",
-                ),
+        if facts.detected_target_count > 0:
+            record(
+                "R-TGT-001",
+                "存在敌方目标但没有满足全部约束的合法候选目标",
+                True,
+                ("detected_target_count={}".format(facts.detected_target_count),),
+            )
+            return self._hold(
+                "R-TGT-001",
+                "没有可立即攻击或可追击的合法目标",
                 facts,
                 tuple(path),
             )
 
-        matches(
-            "SR-009",
-            "不能攻击且不允许追击时保持",
+        record(
+            "R-SEARCH-001",
+            "没有敌方目标且不满足浮标部署条件时开启传感器搜索",
             True,
-            ("chase_allowed=False",),
+            ("detected_target_count=0",),
         )
-        return self._hold(
-            "SR-009",
-            "不能攻击且不允许追击",
-            "chase_allowed=False",
+        return self._decision(
+            Conclusion.SEARCH,
+            "R-SEARCH-001",
+            "没有发现敌方目标，开启传感器搜索",
+            ("detected_target_count=0",),
             facts,
             tuple(path),
         )
@@ -310,8 +590,6 @@ class SymbolicReasoningAgent:
     def build_actions(
         self, facts_list: Iterable[ReasoningFacts]
     ) -> Tuple[Dict[str, Decision], Dict[str, List[List[Any]]]]:
-        """对多个实体推理，生成可直接传给 ``execute_actions`` 的字典。"""
-
         decisions: Dict[str, Decision] = {}
         actions_dict: Dict[str, List[List[Any]]] = {}
         for facts in facts_list:
@@ -330,27 +608,66 @@ class SymbolicReasoningAgent:
         probability: float = 0.7,
         executor: Optional[Executor] = None,
     ) -> RunResult:
-        """完成“符号推理 → execute_actions 执行”的完整过程。
-
-        ``executor`` 为空时使用包内 ``execute_actions.py``，由它校验动作后复用
-        项目现有的 ``execute.execute_actions``；测试时可注入假执行器。
-        """
+        """完成“推理 → execute_actions”的完整过程，默认实际执行。"""
 
         decisions, actions_dict = self.build_actions(facts_list)
         selected_executor = executor or self._load_execute_actions()
         execute_results, rewards = selected_executor(
             actions_dict, enemy_ids, probability, logger
         )
+        status = self._execution_status(decisions, execute_results)
         return RunResult(
             decisions=decisions,
             actions_dict=actions_dict,
             execute_results=execute_results,
             rewards=rewards,
+            execution_status=status,
         )
 
     @staticmethod
+    def _execution_status(
+        decisions: Dict[str, Decision], execute_results: Any
+    ) -> Dict[str, str]:
+        status: Dict[str, str] = {}
+        result_map = execute_results if isinstance(execute_results, dict) else {}
+        for entity_id, decision in decisions.items():
+            actor_index = SymbolicReasoningAgent._main_actor_index(
+                decision.conclusion
+            )
+            if actor_index is None:
+                status[entity_id] = "NOT_REQUESTED"
+                continue
+            entity_result = result_map.get(entity_id)
+            if not isinstance(entity_result, Sequence) or isinstance(
+                entity_result, (str, bytes)
+            ):
+                status[entity_id] = "UNKNOWN"
+            elif actor_index >= len(entity_result):
+                status[entity_id] = "UNKNOWN"
+            else:
+                status[entity_id] = (
+                    "SUCCESS" if bool(entity_result[actor_index]) else "FAILED"
+                )
+        return status
+
+    @staticmethod
+    def _main_actor_index(conclusion: Conclusion) -> Optional[int]:
+        if conclusion is Conclusion.EVADE_MISSILE:
+            return WAYPOINT_ACTOR
+        if conclusion is Conclusion.REQUEST_ATTACK:
+            return ATTACK_ACTOR
+        if conclusion in (Conclusion.CHASE_TO_RANGE, Conclusion.CHASE_AND_ALIGN):
+            return WAYPOINT_ACTOR
+        if conclusion is Conclusion.DEPLOY_SONOBUOY:
+            return SONOBUOY_ACTOR
+        if conclusion is Conclusion.SEARCH:
+            return SENSOR_ACTOR
+        if conclusion is Conclusion.RETURN_TO_BASE:
+            return RETURN_TO_BASE_ACTOR
+        return None
+
+    @staticmethod
     def _load_execute_actions() -> Executor:
-        # 延迟导入，真正执行时再由包内执行层加载根目录 gRPC 接口。
         from .execute_actions import execute_actions
 
         return execute_actions
@@ -362,11 +679,20 @@ class SymbolicReasoningAgent:
             for _ in range(ACTOR_COUNT)
         ]
 
+    @staticmethod
+    def _weapon_rule_id(target_domain: TargetDomain) -> str:
+        if target_domain is TargetDomain.AIR:
+            return "R-WPN-001"
+        if target_domain is TargetDomain.SURFACE:
+            return "R-WPN-002"
+        if target_domain is TargetDomain.SUBMARINE:
+            return "R-WPN-003"
+        return "R-WPN-000"
+
     def _hold(
         self,
         rule_id: str,
         reason: str,
-        matched_fact: str,
         facts: ReasoningFacts,
         inference_path: Tuple[InferenceStep, ...],
     ) -> Decision:
@@ -374,7 +700,7 @@ class SymbolicReasoningAgent:
             Conclusion.HOLD,
             rule_id,
             reason,
-            (matched_fact,),
+            (reason,),
             facts,
             inference_path,
         )
@@ -390,15 +716,23 @@ class SymbolicReasoningAgent:
     ) -> Decision:
         actions = self._empty_actions()
 
-        if conclusion is Conclusion.RETURN_TO_BASE:
-            actions[RETURN_TO_BASE_ACTOR] = [
+        if conclusion is Conclusion.EVADE_MISSILE:
+            actions[WAYPOINT_ACTOR] = [
                 ACTION_THRESHOLD,
-                None,
-                None,
-                None,
-                None,
+                facts.evade_lon,
+                facts.evade_lat,
+                5,
+                4,
             ]
-        elif conclusion is Conclusion.ATTACK:
+        elif conclusion is Conclusion.REQUEST_ATTACK:
+            # 支持动作：先给出攻击高度层，再提交是否发射；武器由系统选择。
+            actions[MOBILITY_ACTOR] = [
+                ACTION_THRESHOLD,
+                4,
+                facts.attack_altitude_level,
+                0.0,
+                0.0,
+            ]
             actions[ATTACK_ACTOR] = [
                 ACTION_THRESHOLD,
                 facts.target_id,
@@ -406,16 +740,35 @@ class SymbolicReasoningAgent:
                 facts.target_lat,
                 None,
             ]
-        elif conclusion is Conclusion.CHASE:
+        elif conclusion in (
+            Conclusion.CHASE_TO_RANGE,
+            Conclusion.CHASE_AND_ALIGN,
+        ):
             actions[WAYPOINT_ACTOR] = [
                 ACTION_THRESHOLD,
                 facts.target_lon,
                 facts.target_lat,
-                facts.waypoint_altitude,
-                facts.waypoint_velocity,
+                facts.attack_altitude_level,
+                facts.waypoint_velocity_level,
+            ]
+        elif conclusion is Conclusion.DEPLOY_SONOBUOY:
+            actions[SONOBUOY_ACTOR] = [
+                ACTION_THRESHOLD,
+                1.0,
+                1.0,
+                None,
+                None,
             ]
         elif conclusion is Conclusion.SEARCH:
-            actions[SENSOR_ACTOR] = [ACTION_THRESHOLD, 1.0, 0.0, 0.0, None]
+            actions[SENSOR_ACTOR] = [ACTION_THRESHOLD, 1.0, 1.0, 0.0, None]
+        elif conclusion is Conclusion.RETURN_TO_BASE:
+            actions[RETURN_TO_BASE_ACTOR] = [
+                ACTION_THRESHOLD,
+                None,
+                None,
+                None,
+                None,
+            ]
 
         return Decision(
             conclusion=conclusion,
@@ -424,4 +777,6 @@ class SymbolicReasoningAgent:
             matched_facts=matched_facts,
             inference_path=inference_path,
             actions=actions,
+            target_id=facts.target_id,
+            expected_weapon_type=facts.expected_weapon_type,
         )

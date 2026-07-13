@@ -15,14 +15,18 @@ class SymbolicReasoningAcceptanceTests(unittest.TestCase):
         self.assertTrue(report["requirements"]["explainability"]["passed"])
         self.assertTrue(report["requirements"]["performance"]["passed"])
         self.assertEqual(
-            report["requirements"]["coverage"]["tested_combinations"], 512
+            report["requirements"]["coverage"]["tested_combinations"], 32768
         )
-        self.assertEqual(report["requirements"]["coverage"]["fired_rules"], 9)
         self.assertEqual(
-            report["requirements"]["explainability"]["explainable"], 512
+            report["requirements"]["coverage"]["invalid_conclusions"], 0
+        )
+        self.assertTrue(
+            report["requirements"]["coverage"]["all_decisive_rules_covered"]
+        )
+        self.assertEqual(
+            report["requirements"]["explainability"]["explainable"], 32768
         )
 
 
 if __name__ == "__main__":
     unittest.main()
-
