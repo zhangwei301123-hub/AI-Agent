@@ -1,0 +1,122 @@
+[
+    {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 8.0,
+      "latitude": 21.452074003561638,
+      "longitude": -157.76396672539715
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {},
+    "logisticStates": {
+      "0": 28350.0
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "03304c8b-a613-4fb9-96df-9b96527bb987",
+    "mdlType": "AIRCRAFT",
+    "missionState": "",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "38",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked",
+      "MountId": "4",
+      "RemainDistance": "4625",
+      "UnitStatus": "UNASSIGNED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 0.0,
+      "yaw": 28.3524169921875
+    },
+    "attrMap": {},
+    "dataRecorder": {},
+    "entityCatr": 2,
+    "entitySpatialCoord": {
+      "altitude": 852000.0,
+      "latitude": 50.5207327039032,
+      "longitude": -133.51534728363882
+    },
+    "forceSide": 2,
+    "innerstates": {
+      "detectionInfo": "[]",
+      "lostTime": "0.0"
+    },
+    "loadMap": {},
+    "logisticStates": {},
+    "mdlClass": "ORBITAL",
+    "mdlID": "18cc2131-a9db-4a2c-a6ae-3e1637c66d3f",
+    "mdlType": "Tselina-2",
+    "name": "Kosmos 2237",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "IdentifyStatus": "1"
+    },
+    "velocity": {
+      "vx": -1126.2433099225611,
+      "vy": -14394.322785529259,
+      "vz": -0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 0.0,
+      "yaw": 161.21990966796875
+    },
+    "attrMap": {},
+    "dataRecorder": {},
+    "entityCatr": 2,
+    "entitySpatialCoord": {
+      "altitude": 855000.0,
+      "latitude": 30.586349835031314,
+      "longitude": 9.800002173192302
+    },
+    "forceSide": 2,
+    "innerstates": {
+      "detectionInfo": "[]",
+      "lostTime": "0.0"
+    },
+    "loadMap": {},
+    "logisticStates": {},
+    "mdlClass": "ORBITAL",
+    "mdlID": "1bdaacb3-94b9-45b0-9548-071973fb6689",
+    "mdlType": "Tselina-2",
+    "name": "Kosmos 2263",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "IdentifyStatus": "1"
+    },
+    "velocity": {
+      "vx": -12135.02526057767,
+      "vy": -7814.3771769529085,
+      "vz": -0.0
+    }
+  }
+]

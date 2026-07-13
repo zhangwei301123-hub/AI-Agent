@@ -1,0 +1,420 @@
+[
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 8.0,
+      "latitude": 21.452074003561638,
+      "longitude": -157.76396672539715
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {
+      "SONOBUOY": 140
+    },
+    "logisticStates": {
+      "0": 28350.0
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "7c990931-3daf-422f-a667-cd4a7cd069c7",
+    "mdlType": "AIRCRAFT",
+    "missionState": "",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "61",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked",
+      "MountId": "13518",
+      "RemainDistance": "2861",
+      "UnitStatus": "UNASSIGNED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 8.0,
+      "latitude": 21.452074003561638,
+      "longitude": -157.76396672539715
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {},
+    "logisticStates": {
+      "0": 28350.0
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "0ab8d22b-7295-4490-8312-b005d077c9a1",
+    "mdlType": "AIRCRAFT",
+    "missionState": "",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "38",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked",
+      "MountId": "4",
+      "RemainDistance": "4625",
+      "UnitStatus": "UNASSIGNED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 8.0,
+      "latitude": 21.452074003561638,
+      "longitude": -157.76396672539715
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {},
+    "logisticStates": {
+      "0": 28350.0
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "883d33b8-7c21-4c74-9bbb-0810167ee4a7",
+    "mdlType": "AIRCRAFT",
+    "missionState": "",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "38",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked",
+      "MountId": "4",
+      "RemainDistance": "4625",
+      "UnitStatus": "UNASSIGNED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 8.0,
+      "latitude": 21.452074003561638,
+      "longitude": -157.76396672539715
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {
+      "SONOBUOY": 140
+    },
+    "logisticStates": {
+      "0": 28350.0
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "73cc0309-a4ec-48e6-8f24-c460b909b5e6",
+    "mdlType": "AIRCRAFT",
+    "missionState": "",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "61",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked",
+      "MountId": "13518",
+      "RemainDistance": "2861",
+      "UnitStatus": "UNASSIGNED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "791800b4-ee84-4e04-8a7c-c9abc6537b62"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 0.0,
+      "latitude": 21.2404045591201,
+      "longitude": -158.02810492076608
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {
+      "SONOBUOY": 24
+    },
+    "logisticStates": {
+      "0": 1855.0
+    },
+    "mdlClass": "SH-60B Seahawk",
+    "mdlID": "5e5ce30a-20e1-46ac-bf0a-d773ece7516b",
+    "mdlType": "AIRCRAFT",
+    "missionState": "Crommelin Helo ASW Screen",
+    "name": "SH-60B Seahawk",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "8",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked in hangar",
+      "MountId": "2190",
+      "RemainDistance": "410",
+      "UnitStatus": "TASKED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 325.9898681640625
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 457.20001220703125,
+      "latitude": 22.51023889344084,
+      "longitude": -158.52687256249956
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {},
+    "logisticStates": {
+      "0": 27514.119140625
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "32da77d2-7975-408f-82ab-b38252b225bb",
+    "mdlType": "AIRCRAFT",
+    "missionState": "Maritime Surveillance North",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "37",
+      "EcmStatus": "0",
+      "RadarStatus": "1",
+      "SonarStatus": "0",
+      "AirStatus": "Airborne",
+      "MountId": "15288",
+      "RemainDistance": "4708",
+      "UnitStatus": "ON_PLOTTED_COURSE"
+    },
+    "velocity": {
+      "vx": -137.5870912021771,
+      "vy": 151.96970860840594,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 20.0,
+      "roll": 20.0,
+      "yaw": 280.2258605957031
+    },
+    "attrMap": {
+      "AirBase": "4d8184c9-362e-42cb-a4af-6fa39b7aaf80"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 2820.6640625,
+      "latitude": 20.822055704790674,
+      "longitude": -157.19456494293976
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {},
+    "logisticStates": {
+      "0": 27377.18359375
+    },
+    "mdlClass": "P-3C Orion Update III",
+    "mdlID": "90aca824-4e92-4cd4-b9cb-ca4bf26e71fb",
+    "mdlType": "AIRCRAFT",
+    "missionState": "Maritime Surveillance South",
+    "name": "P-3C Orion Update III",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "80",
+      "EcmStatus": "0",
+      "RadarStatus": "1",
+      "SonarStatus": "0",
+      "AirStatus": "Airborne",
+      "MountId": "15288",
+      "RemainDistance": "3879",
+      "UnitStatus": "ENGAGED_OFFENSIVE"
+    },
+    "velocity": {
+      "vx": -202.52663976595178,
+      "vy": -281.2328036730866,
+      "vz": 9.72513484954834
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 2.0,
+      "yaw": 150.49761962890625
+    },
+    "attrMap": {},
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": -40.0,
+      "latitude": 20.93798380301621,
+      "longitude": -160.0069770315362
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {
+      "GUIDED_WEAPON": 0
+    },
+    "logisticStates": {
+      "0": -1.0
+    },
+    "mdlClass": "SSN 688 Los Angeles [Flight I]",
+    "mdlID": "9417c2de-b187-4a52-9b53-6809555ef3a7",
+    "mdlType": "SUBMARINE",
+    "missionState": "SSN 698 Bremerton Sea Control",
+    "name": "SSN 698 Bremerton",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "UnitStatus": "ON_PLOTTED_COURSE"
+    },
+    "velocity": {
+      "vx": -1.4720005218355758,
+      "vy": 4.778411290765561,
+      "vz": 0.0
+    }
+  },
+  {
+    "activeLvl": 100.0,
+    "attitude": {
+      "pitch": 0.0,
+      "roll": 20.0,
+      "yaw": 0.0
+    },
+    "attrMap": {
+      "AirBase": "414350cf-5f58-48fa-bb80-cf8ae2d36d2a"
+    },
+    "dataRecorder": {},
+    "entityCatr": 1,
+    "entitySpatialCoord": {
+      "altitude": 0.0,
+      "latitude": 21.249324609918997,
+      "longitude": -158.02193330435156
+    },
+    "forceSide": 1,
+    "innerstates": {},
+    "loadMap": {
+      "SONOBUOY": 24
+    },
+    "logisticStates": {
+      "0": 1855.0
+    },
+    "mdlClass": "SH-60B Seahawk",
+    "mdlID": "6c6c2991-d06c-4216-b690-7db6ea33448c",
+    "mdlType": "AIRCRAFT",
+    "missionState": "Fletcher Helo ASW Screen",
+    "name": "SH-60B Seahawk",
+    "observerForceside": 1,
+    "reportTime": 909570365000,
+    "stateMap": {
+      "FuelBurnRate": "8",
+      "EcmStatus": "0",
+      "RadarStatus": "0",
+      "SonarStatus": "0",
+      "AirStatus": "Parked in hangar",
+      "MountId": "2190",
+      "RemainDistance": "410",
+      "UnitStatus": "TASKED"
+    },
+    "velocity": {
+      "vx": 0.0,
+      "vy": 0.0,
+      "vz": 0.0
+    }
+  }
+]

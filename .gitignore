@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs / outputs
+logs/
+log/
+runs/
+outputs/
+results/
+wandb/
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+
+# Secrets
+.env
+*.key
+credentials.json

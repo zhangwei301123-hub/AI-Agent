@@ -1,0 +1,1972 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.major.mpts.proto";
+option java_outer_classname = "SimulationServiceProto";
+option objc_class_prefix = "GS";
+
+package proto;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+import "google/protobuf/any.proto";
+
+service SimulationService {
+
+    rpc createDeduce(google.protobuf.Empty) returns (ResponseData) {}       //创建推演环境
+    rpc scenarioAnalysis(ScenarioData) returns (IdNameResponse) {}       //想定解析
+    rpc restoreScenario(google.protobuf.Empty) returns (ScenarioData) {}    //想定复原
+
+    rpc getScenarioList(google.protobuf.Empty) returns (ScenarioList) {}    //获取想定列表
+
+
+    rpc loadScenario(ScenarioFileRequest) returns (ResponseData) {}    //加载想定
+    rpc getScenarioXml(google.protobuf.Empty) returns (ScenarioXml) {}    //获取xml格式想定数据
+    rpc saveScenario(google.protobuf.Empty) returns (ResponseData) {}    //保存想定
+    rpc saveAsScenario(ScenarioFileRequest) returns (ResponseData) {}    //另存为想定
+    rpc startDedice(IdRequest) returns (ResponseData) {}    //开始推演
+    rpc pauseDedice(google.protobuf.Empty) returns (ResponseData) {}    //暂停推演
+    rpc endDedice(google.protobuf.Empty) returns (ResponseData) {}    //暂停推演
+    rpc setTimeCompression(TimeCompressionRequest) returns (ResponseData) {}    //设置加速比
+    rpc advanceProcess(AdvanceProcessRequest) returns (stream ProcessStateReprot) {}    //推进固定时间
+
+    rpc publishSituation(google.protobuf.Empty) returns (stream SituationData) {}   //发布态势
+    rpc getPublishSituation(google.protobuf.Empty) returns (SituationData) {}   //单独获取态势
+
+
+    rpc publishAttackReport(google.protobuf.Empty) returns (stream AttackReport) {}   //发布战报
+    rpc publishDetectionReport(google.protobuf.Empty) returns (stream DetectionReport) {}   //发布探测报告
+    rpc publishLostReport(google.protobuf.Empty) returns (stream LostReport) {}   //发布目标丢失报告
+    rpc publishWeaponFireReport(google.protobuf.Empty) returns (stream WeaponFireReport) {}   //武器发射报告
+    rpc publishProcessStateReprot(google.protobuf.Empty) returns (stream ProcessStateReprot) {} //发布进程状态变化报告
+    rpc publishCommLinkStatus(google.protobuf.Empty) returns(stream CommLinkUnits) {} //发布通信链路状态
+    rpc getStrikeMissionInfo(google.protobuf.Empty) returns(stream StrikeMissionList){} //发布阵营中所有任务详细信息
+    rpc publishLogMessages(google.protobuf.Empty) returns(stream LogMessages){} //发布日志报告
+
+
+    rpc addAreaPoint(AreaPointList) returns (ResponseData) {}    //添加参考点
+    rpc deleteAreaPoint(IdRequest) returns (ResponseData) {}    //删除参考点
+    rpc addCombatArea(CombatAreaList) returns (ResponseData) {}    //添加作战区域
+    rpc deleteCombatArea(IdRequest) returns (ResponseData) {}    //删除作战区域
+    rpc getCombatArea(google.protobuf.Empty)returns(AreaPointList){}//获取作战区域
+
+    rpc createStrikeMission(StrikeMission) returns (IdNameResponse) {}    //创建打击任务
+    rpc createPatrolMission(PatrolMission) returns (IdNameResponse) {}    //创建巡逻任务
+    rpc createSupportMission(SupportMission) returns (IdNameResponse) {}    //创建支援任务
+    rpc deleteMission(IdRequest) returns (ResponseData) {}    //删除任务
+    rpc addUnitToMission(MissionMember) returns (ResponseData) {}    //分配实体到AI任务
+    rpc deleteUnitFromMission(MissionMember) returns (ResponseData) {}    //将实体从AI任务移除
+    rpc adjustMissionArea(MissionArea) returns (ResponseData) {}    //调整任务区域
+    rpc addTargetToStrikeMission(StrikeMissionTarget) returns (ResponseData) {}    //打击任务中增加打击目标
+    rpc deleteTargetFromStrikeMission(StrikeMissionTarget) returns (ResponseData) {}    //将目标从打击任务中移除
+
+    rpc addUnitToBattlefield(ScenarioCombatUnit) returns (IdNameResponse) {}    //部署实体到战场中
+    rpc addUnitToBase(ScenarioCarryUnit) returns (IdNameResponse) {}    //部署实体到基地
+    rpc moveUnit(UnitPosition) returns (ResponseData) {}    //更改实体部署位置
+    rpc deleteUnit(IdRequest) returns (ResponseData) {}    //删除实体
+    rpc adjustUnitMount(UnitMount) returns (ResponseData) {}    //调整实体挂载
+
+    rpc aircraftTakeOffSingle(IdRequest) returns (ResponseData) {}    //飞机单机起飞
+    rpc aircraftReturnToBase(IdRequest) returns (ResponseData) {}    //飞机返航至基地
+    rpc setAircraftBase(BaseCarryUnit) returns (ResponseData) {}    //设置飞机基地
+    rpc setUnitRoute(UnitRoute) returns (ResponseData) {}    //设置实体机动航路
+    rpc adjustUnitAltitude(UnitAltitude) returns (ResponseData) {}    //设置实体机动海拔高度
+    rpc adjustUnitSpeed(UnitSpeed) returns (ResponseData) {}    //设置实体机动速度
+    rpc attackContact(AttackRequest) returns (AttackResponse) {}    //打击目标
+    rpc attackOrientation(AttackOrientation) returns (ResponseData) {}    //纯方位攻击
+    rpc cancelAttack(IdRequest) returns (ResponseData) {}    //放弃打击
+    rpc adjustMissileRoute(UnitRoute) returns (ResponseData) {}    //调整巡航弹航路
+    rpc getUnitSensors(IdRequest) returns (SensorStatusList){}  //根据实体id返回实体的传感器
+    rpc controlUnitSensor(SensorControlRequest) returns (ResponseData) {}    //传感器控制
+    rpc delpoySonobuoy(SonobuoyDelpoyRequest) returns (ResponseData) {}    //部署声纳浮标
+
+    rpc getUseUpReport(google.protobuf.Empty) returns (SideUseUpReport) {}   //发布战损战果报告
+    rpc getDamageStateReport(IdRequest) returns (stream DamageStateReport) {} //获取部件毁伤状态报告
+
+    rpc setMissionDate(MissionDate) returns (ResponseData) {} //设置任务的结束时间 任务未结束 可以修改任务的结束时间
+    rpc isBusyUnit(IdRequest) returns (google.protobuf.BoolValue) {} //判断一个单位是否被占用 占用解释=>存在任务
+
+    rpc getMissionStatus(IdRequest) returns(MissionStatus){} //获取任务状态
+
+    rpc getWeather(google.protobuf.Empty) returns(WeatherData){}//获取想定中的天气情况
+    rpc setWeather(WeatherData) returns(ResponseData){}//设置想定中的天气
+
+    rpc getSideMissions(IdRequest) returns(stream SideMission){} //获取阵营中所有任务
+
+    rpc getSides(google.protobuf.Empty) returns(stream ScenarioSide){} //获取当前想定中所有阵营的信息
+    rpc getCurrentScenarioName(google.protobuf.Empty) returns(ScenarioFileRequest){} //获取当前想定名称
+    rpc getScenarioName(google.protobuf.Empty) returns(ScenarioFileName){} //获取想定文件夹中所有想定名称
+
+    rpc sendJammingBomb(IdRequest) returns (ResponseData) {} //发送干扰弹
+
+    rpc attackChange(AttackChangeRequest) returns(ResponseData) {} //变更目指
+
+    rpc setCommLinkStatus(CommLinkStatus) returns(ResponseData) {} //设置两个单位之间的通信链路状态
+
+    rpc buildCommLink(CommLinkStatus) returns(ResponseData) {} //构建通信链路
+
+    rpc establishingRelationship(Relationship) returns(ResponseData) {} //添加指挥关系
+    rpc declaringRelationship(Relationship) returns(ResponseData) {} //删除指挥关系
+
+    rpc getEnvironmentZones(google.protobuf.Empty) returns(EnvironmentZones) {} //获取所有的环境区域
+    rpc createcustomEnvironmentZone(EnvironmentZone) returns(ResponseData) {} //添加环境区域
+    rpc removeCustomEnvironmentZone(IdRequest) returns(ResponseData) {} //删除环境区域
+    rpc manualfireComponentStatus(fireComponentUnit) returns(ResponseData) {} //手动干预发射单元
+
+    rpc bindNessUnitSensor(SensorControlRequest) returns (ResponseData) {}    //传感器毁伤
+    rpc getUnitSensorStatus(SensorControlRequest) returns (SensorStatusList) {}    //传感器状态
+    rpc getDayOrNight(DayOrNightRequest) returns(DayOrNight) {} //获取白天黑夜
+    rpc createSatellite(createSatelliteRequest) returns(ResponseData) {} //部署卫星
+    rpc setSideMissionsRealiablity(RealiablityRequest) returns(ResponseData) {} //设置武器可靠度
+    rpc addJiaofanToBattlefield(JiaofanCombatUnit) returns (IdNameResponse) {}  //释放角反
+
+    rpc struBeforeInputData(StruBeforeMGroundInputTargets) returns (ResponseData) {}  //筹划到互操作转发给任务级
+    rpc struBeforeOutputData(google.protobuf.Empty) returns (StruBeforeMGroundInputTargets) {}  //任务级转发给交战集
+    rpc publishContactLocation(google.protobuf.Empty) returns (stream StMGroundMoveList) {}  //发布导弹飞行中的目标位置数据
+    rpc exeport(google.protobuf.Empty) returns (ResponseData) {}  //发布导弹飞行中的目标位置数据
+    rpc addWeapon(addWeaponRequest) returns (ResponseData) {}  //为作战单元添加武器
+
+
+    //----------------用户手册新增 start---------------------------
+    rpc createSide(CreateSideRequest) returns (ResponseData) {} //创建阵营
+    rpc getDeduceScenarioList(google.protobuf.Empty) returns (DeduceScenariosData) {}//获取推演实例列表
+    rpc joinDeduceScenario(google.protobuf.Empty) returns (ResponseData) {}//加入当前推演实例
+    rpc exitCurrentDeduceScenario(google.protobuf.Empty) returns (ResponseData) {}//退出当前推演实例列表
+    rpc addDetectedRecord(DetectedRecordRequest) returns (ResponseData) {}//接收外部探测记录
+    //----------------用户手册新增 end---------------------------
+
+    //监听参数变动
+    rpc acceptParameterChanges(google.protobuf.Empty) returns (stream ParamResponse) {}
+    //设置海洋环境 需要指定一个区域
+    rpc setMarineEnvData(MarineEnvData) returns (ResponseData) {}
+    //增加一个目标
+    rpc detectUnit(DetectUnitInfo) returns (ResponseData) {}
+    //同时打击多个目标
+    rpc attackContacts(AttackRequests) returns (AttackResponse) {}
+
+    //武大对接
+    rpc publishZntSituation(google.protobuf.Empty) returns (DeduceScenariosData) {}
+    //专业数据同步接口
+    rpc majorDataSync(ProfessionalData) returns (ResponseData) {}
+    //获取全部任务信息接口
+    rpc getAllTaskText(google.protobuf.Empty) returns (AllTaskText){}
+    //设置阵营分数
+    rpc addTotalScore(TotalScore) returns (ResponseData) {}
+    //获取得分日志（参数只需要阵营id）
+    rpc getScoreLog(TotalScore) returns (TotalScoreList) {}
+
+
+
+
+
+
+
+
+
+
+
+    //---------------------------以下为武大接口----------------------------
+
+    //rpc restoreScenariow(google.protobuf.Empty) returns (SituationDatas) {} //想定reset
+    rpc startDedicew(IdRequestw) returns (ResponseDataw) {}    //开始推演
+    rpc pauseDedicew(google.protobuf.Empty) returns (ResponseDataw) {}    //暂停推演
+    rpc getEndSignal(google.protobuf.Empty) returns (EndSignalw){}    //获取推演结束信号*
+    rpc getSituation(google.protobuf.Empty) returns (SituationDatas) {}   //得到态势*
+    rpc getUseUpReportw(google.protobuf.Empty) returns (UseUpReports) {}   //发布战损报告
+
+    rpc getAttackReport(google.protobuf.Empty) returns (AttackReports) {}   //得到战报
+    rpc getDetectionReport(google.protobuf.Empty) returns (DetectionReports) {}   //发布探测报告 新发现的单装信息
+    rpc aircraftTakeOffSinglew(IdRequestw) returns (ResponseDataw) {}    //飞机单机起飞
+    rpc aircraftReturnToBasew(IdRequestw) returns (ResponseDataw) {}    //飞机返航至基地
+    rpc setUnitRoutew(UnitRoutew) returns (ResponseDataw) {}            //设置实体机动航路
+    rpc adjustUnitAltitudeAndSpeed(UnitAltitudeAndSpeedw) returns (ResponseDataw) {}    //设置实体机动海拔高度和速度
+    rpc attackContactw(AttackRequestw) returns (ResponseDataw) {}                  //打击目标
+    rpc controlUnitSensorw(SensorControlRequestw) returns (ResponseDataw) {}    //传感器控制
+    rpc delpoySonobuoyw(SonobuoyDelpoyRequestw) returns (ResponseDataw) {}    //部署声纳浮标
+    rpc cancelAttackw(IdRequestw) returns (ResponseDataw) {}    //放弃打击
+    rpc getAllLog(google.protobuf.Empty) returns (LogMessages){}//获取黑窗口日志信息
+    rpc getTimeCompression(google.protobuf.Empty) returns (TimeCompression){}//获取加速比
+    rpc attackOrientationw(AttackOrientationw) returns (ResponseDataw) {}    //纯方位攻击
+
+
+
+
+    //    public abstract SDKResponse<Void> seekByPercent(float var1);
+    //---------------------------录制回放功能----------------------------
+    rpc stop(google.protobuf.Empty) returns (ResponseData){}//停止回放
+    rpc play(google.protobuf.Empty) returns (ResponseData){}//开始回放
+    rpc pause(google.protobuf.Empty) returns (ResponseData){}//暂停回放
+    rpc startRecord(google.protobuf.Empty) returns (ResponseData){}//开始录制
+    rpc saveStopRecord(recordingParam) returns (ResponseData){}//结束保存录制（只需要视频名称）
+    rpc setSpeed(recordingParam) returns (ResponseData){}//设置播放速度（只需要播放速度）
+    rpc load(recordingParam) returns (ResponseData){}//加载回放（只需要视频名称）
+    rpc listFiles(google.protobuf.Empty) returns (recordingParam){}//获取全部回放内容
+    rpc gethandleList(google.protobuf.Empty)returns(stream HandleList){}//获取事件信息
+    rpc getMissionList(google.protobuf.Empty)returns(MissionList){}//获取任务列表
+    rpc getMoonInfoAndWeather(WayPoint) returns(MoonInfoAndWeather){}//获取任务列表
+}
+message MoonInfoAndWeather{
+    map<string,string> map = 1;//月相&云层
+}
+//任务集合
+message MissionList{
+    message Mission{
+        string missionId = 1;//任务id
+        string missionName = 2;//任务名称
+        int32 missionType = 3;//任务类型
+        repeated AreaPoint areaPoints = 4;//区域参考点集合
+    }
+    repeated Mission mission = 1;
+
+}
+message HandleList{
+    message Handle{
+        string sideName=1;//阵营名称
+        int32 handleType=2;//1:探测,2:攻击
+        string unitId = 3;  //实体id
+        string contactId = 4;  //目标id
+        string dateTime = 5;//发生时间
+    }
+    repeated Handle handle=1;//事件信息集合
+
+}
+//阵营得分日志
+message TotalScoreList{
+    repeated TotalScore totalScore = 1;
+}
+//设置得分
+message TotalScore{
+    string sideId = 1;//阵营id
+    int64 scoreTime = 2;//得分时间
+    string scoreReason = 3;//得分原因
+    int32 score = 4;//分数
+}
+message ScenarioList{
+    repeated string scenarioName=1;//想定名称
+}
+//视频参数
+message recordingParam{
+    string videoName=1;//保存视频名称
+    repeated string videoNameList = 2;//返回的视频名称集合
+    enum Speed {
+        x1=0;
+        x5=1;
+        x10=2;
+        Full=3;
+    }
+    Speed speed = 3;//播放速度
+}
+//各专业接口数据
+message ProfessionalData{
+    string unitId = 1;//单位id
+    string id = 2;//组件id
+    string ProfessionalName = 3;//专业名称
+    ProfessionalType professionalType = 4;//专业类型
+    map<string,string> map = 5;//接收到的专业数据
+    string retStr = 6;//返回的专业数据
+}
+//专业类型
+enum ProfessionalType {
+    SubOperation = 0 ; //潜操
+    IntegratePower = 1;//综合电力
+    UniversalLaunch = 2;//电磁发射
+    NuclearPower = 3;//核动力
+}
+message  DetectUnitInfo {
+    string detectId = 1;  //实体id
+    string contactId = 2;  //目标id
+    double lon = 3;  //目标经度
+    double lat = 4;  //目标纬度
+    IdentificationStatus status = 5; //目标被识别的状态
+}
+
+
+message DetectedRecordRequest{
+    string record = 1;//探测记录
+}
+
+message CreateSideRequest{
+    string sideName = 1;//阵营名称
+}
+
+//返回信息
+message DeduceScenariosData {
+    ResponseData response = 1;
+    repeated DeduceScenario deduceScenarioList = 2;
+}
+
+message DeduceScenario {
+    string id = 1;//推演实例ID
+    string name = 2;//推演实例名称
+}
+
+message createDeduceScenario {//创建推演环境
+    ResponseData response = 1;//返回信息
+}
+
+message ProcessStateReprot {
+    EnumProcessState state = 1;//当前推演进程状态
+    SituationTime time = 2;        //时间相关数据
+    EnumTimeCompression timeCompression = 3;  //当前加速比
+}
+
+enum EnumProcessState {
+    No = 0;//无
+    Run = 1;//开始
+    Pause = 2;//暂停
+    End = 3;//结束
+}
+message MissionStatus{
+    ResponseData response = 1;//返回信息
+    EnumMissionStatus status= 2; // 状态枚举
+}
+enum EnumMissionStatus{
+    Active = 0;//激活状态
+    NotActive = 1;//未激活状态
+}
+
+message AdvanceProcessRequest {
+    int64 advanceTime = 1;    //推进时长，单位秒
+}
+
+
+message ScenarioFileRequest {
+    string fileName = 1;    //想定文件名称
+    string scenarioXml = 2;  //xml格式想定文件
+}
+
+message ScenarioFileName {
+    repeated ScenarioFileRequest fileNames = 1; //想定文件名称
+}
+
+//加速比枚举
+enum EnumTimeCompression {
+    OneSec = 0;//1秒
+    TwoSec = 1;//2秒
+    FiveSec = 2;//5秒
+    FifteenSec = 3;//15秒
+    Turbo = 4;//急速
+}
+
+//设置加速比请求
+message TimeCompressionRequest {
+    EnumTimeCompression timeCompression = 1;  //加速比
+}
+
+//    想定数据
+message ScenarioData {
+    string id = 1;    //想定id
+    string name = 2;    //想定名称
+    string description = 3;    //想定描述
+    string startTime = 4;    //想定开始时间，时间戳，精确到毫秒，不填默认使用当前时间
+    string duration = 5;    //想定持续时间，单位秒，不填默认1年
+    repeated ScenarioSide sides = 6 ; //阵营信息
+}
+
+//  想定解析-阵营信息
+message ScenarioSide {
+    string id = 1;//阵营id
+    string name = 2;  //阵营名称
+    map<string, PostureStance> postures = 3;  //阵营之间立场，key为目标阵营，value为立场态度。
+    repeated ScenarioCombatUnit combatUnits = 4;   //阵营下实体信息
+    SideColor sideColor = 5;  //阵营颜色
+    repeated Army armies = 6;         //部队信息
+    repeated CombatArea combatAreas = 7;         //作战区域信息
+    repeated AreaPoint areaPoints = 8;         //参考点信息
+    repeated StrikeMission strikeMissions = 9; //任务信息
+}
+
+enum SideColor {
+    Red = 0;//红
+    Blue = 1;//蓝
+    Green = 2;//绿
+    Purple = 3;//紫
+    Orange = 4;//橙
+    DarkBlue = 5;//深蓝
+    DarkPurple = 6;//酱紫
+    DarkGreen = 7;//深绿
+    CyanBlue = 8;//青蓝
+}
+
+enum PostureStance {
+    Neutral = 0; //中立
+    Friendly = 1; //友好
+    Unfriendly = 2;//不友好
+    Hostile = 3; //敌对
+    PSUnknown = 4; //未知
+}
+
+
+//想定解析-实体信息
+message ScenarioCombatUnit {
+    string id = 1;//实体id
+    string name = 2;  //实体名称
+    string sideName = 3;    //所属阵营名称
+    int32 dbId = 4; //装备数据库id
+    UnitType type = 5; //实体类型
+    double lon = 6; //所处经度
+    double lat = 7; //所处纬度
+    float heading = 8;//朝向角度
+    //repeated MountWeapon mountWeapons = 9; //挂载武器
+    int32 loadoutDBId = 9;    //挂载方案ID
+    repeated ScenarioCarryUnit carryUnits = 10;//搭载实体
+    bool autoDetectable = 11; //是否可被自动发现
+    float alt = 12; //高度
+    repeated int32 commDBId = 13; //通信设备
+    UnitCategory unitCategory = 14;//实体类别
+
+}
+enum UnitType {
+    None = 0; //无
+    Aircraft = 1; //飞行器
+    Ship = 2; //船。战舰
+    Submarine = 3; //潜艇
+    Facility = 4; //设施
+    Aimpoint = 5; //瞄准点
+    Weapon = 6; //武器
+    Satellite = 7; //卫星
+}
+enum UnitCategory{
+    Aircraft_Fighter = 0 ;//	战斗机
+    Aircraft_Multirole = 1;//	多用途（战斗/攻击）
+    Aircraft_ASAT = 2;//	反卫星武器 （反卫星武器）
+    Aircraft_AirborneLaserPlatform = 3;//	机载激光平台
+    Aircraft_Attack = 4;//	攻击机
+    Aircraft_WildWeasel = 5;//	野鼬鼠 （防空压制）
+    Aircraft_Bomber = 6;//	轰炸机
+    Aircraft_CAS = 7;//	战场空中拦截（BAI/ CAS）
+    Aircraft_OECM = 8;//	电子战
+    Aircraft_AEW = 9;//	早期空中预警 （AEW）
+    Aircraft_AirborneCP = 10;//	机载指挥站 （ACP）
+    Aircraft_SAR = 11;//	搜索及救援 （SAR）
+    Aircraft_MCM = 12;//	反水雷舰 （MCM）
+    Aircraft_ASW = 13;//	反潜作战 （ASW）
+    Aircraft_MPA = 14;//	海上巡逻机 （MPA）
+    Aircraft_ForwardObserver = 15;//	前进观察员
+    Aircraft_AreaSurveillance = 16;//	区域监视
+    Aircraft_Recon = 17;//	侦查
+    Aircraft_ELINT = 18;//	电子情报收集 （ELINT）
+    Aircraft_SIGINT = 19;//	信号情报收集 （SIGINT）
+    Aircraft_Transport = 20;//	运输机
+    Aircraft_Cargo = 21;//	货机
+    Aircraft_Commercial = 22;//	商业飞机
+    Aircraft_Civilian = 23;//	民用飞机
+    Aircraft_Utility = 24;//	通用直升机
+    Aircraft_Utility_Naval = 25;//	海军通用直升机
+    Aircraft_Tanker = 26;//	加油机 （空中加油）
+    Aircraft_Trainer = 27;//	教练机
+    Aircraft_TargetTowing = 28;//	牵引机
+    Aircraft_TargetDrone = 29;//	靶机
+    Aircraft_UAV = 30;//	无人机（UAV）
+    Aircraft_UCAV = 31;//	无人作战飞行器（UCAV）
+    Aircraft_AirShip = 32;//	飞艇
+    Aircraft_Aerostat = 33;//	航空器
+    Aircraft_IMGSAT = 34;//
+    Aircraft_RORSAT = 35;//
+    Aircraft_EORSAT = 36;
+
+    Ship_CV = 37;//航空母舰
+    Ship_CVA = 38;// 攻击型航空母舰
+    Ship_CVB = 39;// 大型航空母舰
+    Ship_CVE = 40;// 护航航空母舰
+    Ship_CVGH = 41;// 导弹直升机航母
+    Ship_CVH = 42;// 直升机航母
+    Ship_CVL = 43;// 轻型航空母舰
+    Ship_CVN = 44;//核动力航空母舰
+    Ship_CVS = 45;// 水上飞机母舰
+    Ship_SeaplaneCarrier = 46;
+    Ship_B = 47;// 战列舰
+    Ship_BB = 48;// 战列舰
+    Ship_BBC = 49;// 指挥战列舰
+    Ship_BBG = 50;// 导弹战列舰
+    Ship_BBH = 51;// 直升机战列舰
+    Ship_BCGN = 52;// 核动力导弹战列巡洋舰
+    Ship_BM = 53;// 小型浅水重炮舰
+    Ship_C = 54;// 巡洋舰
+    Ship_CA = 55;// 重型巡洋舰
+    Ship_CAG = 56;// 重型导弹巡洋舰
+    Ship_CB = 57;// 大型巡洋舰
+    Ship_CBG = 58;// 大型导弹巡洋舰
+    Ship_CG = 59;// 导弹巡洋舰
+    Ship_CGH = 60;// 导弹直升机巡洋舰
+    Ship_CGN = 61;// 核动力导弹巡洋舰
+    Ship_CL = 62;// 轻型巡洋舰
+    Ship_CLAA = 63;// 轻型防空巡洋舰
+    Ship_CLC = 64;// 轻型指挥巡洋舰
+    Ship_CLG = 65;// 轻型导弹巡洋舰
+    Ship_CLH = 66;// 轻型直升机巡洋舰
+    Ship_CS = 67;// 侦查巡洋舰
+    Ship_D = 68;// 驱逐舰
+    Ship_DD = 69;// 驱逐舰
+    Ship_DDG = 70;// 导弹驱逐舰
+    Ship_DDH = 71;// 直升机驱逐舰
+    Ship_DDK = 72;// 反潜艇驱逐舰
+    Ship_DDR = 73;// 雷达警戒驱逐舰
+    Ship_DE = 74;// 护航驱逐舰
+    Ship_DEG = 75;// 导弹护航驱逐舰
+    Ship_DER = 76;// 雷达警戒护航驱逐舰
+    Ship_DL = 77;// 驱逐舰
+    Ship_DLG = 78;// 导弹驱逐舰
+    Ship_DM = 79;// 布雷驱逐舰（改装自驱逐舰）
+    Ship_F = 80;// 护卫舰
+    Ship_FF = 81;// 护卫舰
+    Ship_FFG = 82;// 导弹护卫舰
+    Ship_FFL = 83;// 导弹护卫舰
+    Ship_PF = 84;// 巡逻护卫舰
+    Ship_LCS = 85;// 濒海战斗舰
+    Ship_OPV = 86;// 海洋巡逻艇
+    Ship_PB = 87;// 巡逻艇
+    Ship_PC = 88;// 海岸巡逻艇
+    Ship_PCE = 90;// 猎潜护航艇
+    Ship_PCF = 91;// 快速巡逻艇
+    Ship_PCFG = 92;// 快速导弹巡逻艇
+    Ship_PG1 = 93;// 巡逻舰
+    Ship_PG2 = 94;// 轻型护卫舰
+    Ship_PGM = 95;// 导弹炮舰
+    Ship_PH = 96;// 水翼炮艇
+    Ship_PHM = 97;// 导弹水翼船
+    Ship_PHT = 98;// 水翼鱼雷快艇
+    Ship_PT = 99;// 巡逻鱼雷艇
+    Ship_PTS = 100;// 小型鱼雷巡逻艇
+    Ship_MTB = 101;// 鱼类摩托艇
+    Ship_WHEC = 102;// 海岸警卫队高续航快艇
+    Ship_WMEC = 103;// 海岸警卫队中续航快艇
+    Ship_WPB = 104;// 海岸警卫队巡逻船
+    Ship_WPG = 105;// 海岸警卫队巡逻炮艇
+    Ship_MCDV = 106;// 海事海防船
+    Ship_AGF = 107;// 舰队旗舰
+    Ship_AGC = 108;// 两栖舰队旗舰
+    Ship_LCAC = 109;// 气垫登陆艇
+    Ship_LCC = 110;// 两栖指挥舰
+    Ship_LCM = 111;// 机械化登陆艇
+    Ship_LCP= 112;// 人员登陆艇
+    Ship_LCT = 113;// 坦克登陆艇
+    Ship_LCU = 114;// 通用登陆艇
+    Ship_LCVP = 115;// 车辆及人员登陆艇
+    Ship_LFR = 116;// 近岸火力支援船
+    Ship_LHA = 117;// 两栖攻击舰，通用
+    Ship_LHD = 118;// 两栖攻击舰，多用途
+    Ship_LKA = 119;// 两栖货舰
+    Ship_LPD = 120;// 两栖船坞运输舰
+    Ship_LPH = 121;// 两栖攻击直升机航母
+    Ship_LSD = 122;// 船坞登陆舰
+    Ship_LSL = 123;// 后勤登陆舰
+    Ship_LSM = 124;// 中型登陆舰
+    Ship_LSMR = 125;// 中型登陆舰,火箭
+    Ship_LST = 126;// 坦克登陆舰
+    Ship_LSU = 127;// 通用登陆舰
+    Ship_LSV = 128;// 车辆登陆舰
+    Ship_AD = 129;// 驱逐舰供应舰
+    Ship_AE = 130;// 弹药船
+    Ship_AF = 131;// 冷藏储运船
+    Ship_AFS = 132;// 军需品储运船
+    Ship_AG = 133;// 通用辅助船
+    Ship_AGB = 134;// 重型破冰船
+    Ship_AGI = 136;// 情报收集舰
+    Ship_AGMR = 137;// 通信中继船
+    Ship_AGOR = 138;// 海洋科学考察船
+    Ship_AGOS = 139;// 海洋监测船
+    Ship_AGR = 140;// 雷达警戒（改装自货船）
+    Ship_AGS = 141;// 测量船
+    Ship_AGTR = 142;// 技术考察船
+    Ship_AH = 143;// 医疗船
+    Ship_AK = 144;// 货船
+    Ship_AKA = 145;// 武装货船
+    Ship_AKE = 146;// 干货船
+    Ship_AKR = 147;// 滚装船
+    Ship_AKS = 148;// 通用存运船
+    Ship_AO = 149;// 舰队油船
+    Ship_AOE = 150;// 快速战斗支援舰
+    Ship_AOL = 151;// 小型油船
+    Ship_AOR = 152;// 补给油船
+    Ship_AOT = 153;// 运油船
+    Ship_APA = 154;// 攻击型人员运输舰
+    Ship_APD = 155;// 运兵船（高速）
+    Ship_AR = 156;// 修理船
+    Ship_AS = 157;// 潜艇供应舰
+    Ship_ATC = 158;// 武装运兵船 (靶船)
+    Ship_ATA = 159;// 辅助远洋拖船
+    Ship_ATS = 160;// 救助拖船
+
+    Submarine__AGSS = 161;
+    Submarine__APSS = 162;
+    Submarine__SS = 163;
+    Submarine__SSB = 164;
+    Submarine__SSBN = 165;
+    Submarine__SSG = 166;
+    Submarine__SSGN = 167;
+    Submarine__SSK = 168;
+    Submarine__SSM = 169;
+    Submarine__SSN = 170;
+    Submarine__SSP = 171;
+    Submarine__SSR = 172;
+    Submarine__SSRN = 173;
+    Submarine__SDV = 174;
+    Submarine__ROV = 175;
+    Submarine__UUV = 176;
+    Submarine__Biologics = 177;
+    Submarine__FalseTarget = 178;
+
+//    Weapon_GuidedWeapon = 179;
+//    Weapon_Rocket = 180;
+//    Weapon_IronBomb = 181;
+//    Weapon_Gun = 182;
+//    Weapon_Decoy_Expendable = 183;
+//    Weapon_Decoy_Towed = 184;
+//    Weapon_Decoy_Vehicle = 185;
+//    Weapon_TrainingRound = 186;
+//    Weapon_Dispenser = 187;
+//    Weapon_ContactBomb_Suicide = 188;
+//    Weapon_ContactBomb_Sabotage = 189;
+//    Weapon_GuidedProjectile = 190;
+//    Weapon_SensorPod = 191;
+//    Weapon_DropTank = 192;
+//    Weapon_BuddyStore = 193;
+//    Weapon_FerryTank = 194;
+//    Weapon_Torpedo = 195;
+//    Weapon_DepthCharge = 196;
+//    Weapon_Sonobuoy = 197;
+//    Weapon_BottomMine = 198;
+//    Weapon_MooredMine = 199;
+//    Weapon_FloatingMine = 200;
+//    Weapon_MovingMine = 201;
+//    Weapon_RisingMine = 202;
+//    Weapon_DriftingMine = 203;
+//    Weapon_DummyMine = 204;
+//    Weapon_HeliTowedPackage = 205;
+//    Weapon_BallisticMissile = 206;
+//    Weapon_RV = 207;
+//    Weapon_Laser = 208;
+//    Weapon_HGV = 209;
+//    Weapon_Cargo = 210;
+//    Weapon_Troops = 211;
+//    Weapon_Paratroops = 212;
+
+    Facility_Runway = 213;
+    Facility_RunwayGrade_Taxiway = 214;
+    Facility_RunwayAccessPoint = 215;
+    Facility_Building_Surface = 216;
+    Facility_Building_Reveted = 217;
+    Facility_Building_Bunker = 218;
+    Facility_Building_Underground = 219;
+    Facility_Structure_Open = 220;
+    Facility_Structure_Reveted = 221;
+    Facility_Underwater = 222;
+    Facility_Mobile_Vehicle = 223;
+    Facility_Mobile_Personnel = 224;
+    Facility_AerostatMooring = 225;
+    Facility_AirBase = 226;
+
+    Satellite_IMGSAT = 227;
+    Satellite_RORSAT = 228;
+    Satellite_EORSAT = 229;
+    Satellite_SIGINT = 230;
+    Satellite_ELINT = 231;
+    Satellite_NOSS = 232;
+    Satellite_MASINT = 233;
+
+}
+
+//想定解析-搭载实体信息
+message ScenarioCarryUnit {
+    string id = 1;  //实体id
+    string name = 2;  //实体名称
+    string baseId = 3;  //基地实体id
+    int32 dbId = 4;  //装备数据库id
+    UnitType type = 5;  //实体类型
+    int32 loadoutDBId = 6;    //挂载方案ID
+    repeated int32 commDBId = 7; //通信设备
+    //repeated MountWeapon mountWeapons = 6;  //挂载武器
+}
+
+//部队信息
+message Army {
+    string id = 1;   //部队ID
+    string name = 2;//部队名称
+    repeated string members = 3;//实体信息CombatUnit的ID
+}
+
+//挂载武器信息
+message MountWeapon {
+    int32 weaponDBId = 1; //武器数据库id
+    string weaponModel = 2; //武器型号
+    int32 number = 3; //武器数量
+    WeaponType weaponType = 4; //武器类型
+    WeaponTarget weaponTarget = 5; // 目标类型
+    int32 weaponCount = 6;//武器总数
+    double maxRange = 7;//最大射程
+    double minRange = 10;//最小射程
+    bool canManagedWeapon = 8; // 是否被接管
+    int32 weaponMaxIndex = 9;//武器最大射程角标
+
+}
+
+enum WeaponType{
+    Weapon_GuidedWeapon = 0;//制导武器
+    Weapon_Rocket = 1;//火箭弹
+    Weapon_IronBomb = 2;//炸弹
+    Weapon_Gun = 3;//火炮
+    Weapon_Decoy_Expendable = 4; //诱饵（一次性）,可消耗诱饵
+    Weapon_Decoy_Towed = 5; //诱饵（拖曳型）
+    Weapon_Decoy_Vehicle = 6; //诱饵（飞行器型）
+    Weapon_TrainingRound = 7;//训练弹
+    Weapon_Dispenser = 8;//布撒武器
+    Weapon_ContactBomb_Suicide = 9;//接触炸弹（自杀式）
+    Weapon_ContactBomb_Sabotage = 10;//接触炸弹（破坏式）
+    Weapon_GuidedProjectile = 11;//制导炮弹
+    Weapon_SensorPod = 12;//传感器吊舱
+    Weapon_DropTank = 13;//副油箱（可抛弃）
+    Weapon_BuddyStore = 14;//军用加油船；空中加油飞机；燃料供应基地
+    Weapon_FerryTank = 15;//渡轮坦克
+    Weapon_Torpedo = 16;//鱼雷
+    Weapon_DepthCharge = 17;//深水炸弹
+    Weapon_Sonobuoy = 18;//声纳浮标
+    Weapon_BottomMine = 19;//沉底雷
+    Weapon_MooredMine = 20;//锚雷
+    Weapon_FloatingMine = 21;//浮动水雷
+    Weapon_MovingMine = 22;//移动水雷
+    Weapon_RisingMine = 23;//上浮水雷
+    Weapon_DriftingMine = 24;//漂雷
+    Weapon_DummyMine = 25;//假水雷
+    Weapon_HeliTowedPackage = 26;//直升机拖曳包
+    Weapon_BallisticMissile = 27; //弹道导弹
+    Weapon_RV = 28;//再入飞行器
+    Weapon_Laser = 29;//激光器
+    Weapon_HGV = 30;//高超音速滑翔飞行器
+}
+
+// 武器能打击的目标类型
+message WeaponTarget {
+    bool isSurfaceShip = 1;         // 水面舰艇
+    bool isSubsurface = 2;          // 水下目标
+    bool isAircraft = 3;            // 飞行器
+    bool isGuidedWeapon = 4;        // 制导武器
+    bool isSatellite = 5;           // 卫星
+    bool isRadar = 6;               // 雷达
+    bool isRunway = 7;              // 跑道
+    bool isSoftLandStructures = 8;  // 普通地面建筑
+    bool isHardLandStructures = 9;  // 地面防御设施
+    bool isTorpedoe = 10;           // 鱼雷
+    bool isMine = 11;               // 地雷
+    bool isHelicopter = 12;         // 直升飞机
+    bool isSoftMobileUnit = 13;     // 普通移动单位
+    bool isHardMobileUnit = 14;     // 装甲移动单位
+    bool isUnderwaterStructure = 15;// 水下设施
+    bool isCounterRAM = 16;         // 防空设施
+    bool isAirfield = 17;           // 空域
+}
+
+//作战区域
+message CombatArea {
+    string id = 1; //作战区域id
+    string name = 2; //作战区域名称
+    string sideName = 3; //所属阵营
+    repeated string areaPoints = 4; //参考点id集合
+}
+
+message CombatAreaList {
+    repeated CombatArea combatAreaList = 1; //作战区域集合
+    string sideName = 2;  //阵营名称
+}
+
+//参考点信息
+message AreaPoint {
+    string id = 1;      //参考点id,
+    string name = 2;      //参考点名称
+    string sideName = 3;  //阵营名称
+    double lon = 4;      //参考点经度
+    double lat = 5;      //参考点纬度
+    string relativeToUnit = 6;      //参考点移动相对单位id
+    BearingType bearingType = 7;      //参考点移动方位类型
+}
+
+message AreaPointList {
+    repeated AreaPoint areaPointList = 1; //参考点集合
+    string sideName = 2;  //阵营名称
+}
+
+enum BearingType {
+    Fixed = 0; //固定方位
+    Rotating = 1; //相对方位
+}
+
+//态势数据
+message SituationData {
+    SituationTime time = 1;        //时间相关数据
+    repeated SituationSide side = 2;    //阵营数据
+    int64 timeCompression = 3;//加速信息
+    string situationStatus = 4;//想定运行状态
+    bool recordStatus = 5;//录制状态
+    int32 recordOrDeduce = 6;//态势数据是推演1 还是回放2
+}
+//态势-时间数据
+message SituationTime {//时间相关数据
+    string beginTime = 1;     //想定开始时间
+    string currentTime = 2;   //想定当前时间
+    int64 currentStep = 3;    //已推演时间，秒
+}
+//态势-阵营数据
+message SituationSide {
+    string id = 1;//阵营id
+    string name = 2;  //阵营名称
+    map<string, PostureStance> postures = 3;  //阵营之间立场，key为目标阵营，value为立场态度。
+    repeated SituationCombatUnit combatUnits = 4;   //阵营下实体信息
+    repeated SituationContact contacts = 5;         //阵营探测到的目标信息
+    repeated Army armies = 6;         //部队信息
+    repeated CombatArea combatAreas = 7;         //作战区域信息
+    repeated AreaPoint areaPoints = 8;         //参考点信息
+    repeated EnemyInfo enemyInfo = 9;//对立方所有单位位置信息
+    repeated GroupUnit groupUnit = 11;//编队名称
+    repeated StrikeMission strikeMissions= 12;//任务集合
+
+}
+message GroupUnit{
+    repeated string groupIds = 1;//编队id集合
+    string groupName = 2;//编队名称
+}
+//态势-实体数据
+message SituationCombatUnit {
+    string id = 1;//实体id
+    string name = 2;  //实体名称
+    string sideName = 3;    //所属阵营名称
+    int32 dbId = 4; //装备数据库id
+    string model = 5;//装备型号
+    UnitType type = 6; //实体类型
+    SpatialLocation location = 7;//空间位置
+    Attitude attitude = 8; //姿态
+    float speed = 9;//速度，海里/时
+    WeaponData weaponData = 10;//实体为在空武器时的数据
+    string baseId = 11; //所属基地实体id
+    float health = 12; //系统完整性，百分比，可理解为血量
+    string missionId = 13;    //执行的任务ID
+    UnitStatus unitStatus = 14;   //实体状态
+    AirOpsCondition airOpsCondition = 15;//飞机操作状态，仅飞机实体
+    bool autoDetectable = 16; //是否可被自动发现
+    repeated MountWeapon mountWeapons = 17;//挂载武器信息
+    FuelStatus fuelStatus = 18;//燃油状态
+    repeated SensorStatus sensorStatus = 19;//传感器状态
+    FireIntensityLevel  fireIntensityLevel = 20;//伤害失火等级
+    FloodingIntensityLevel  floodingIntensityLevel = 21;//进水损坏等级
+    bool isJammed = 22;//是否被干扰
+    string unitCategory = 23; //单位类别 是 战斗机还是巡逻舰等
+    int32 damagedState = 24; //单元毁伤状态：0为正常，1为故障(发动机坏了),2为损毁(发射系统坏了)
+    string baseName = 25; //给筹划弹地加的所属基地实体名称
+
+
+    bool canManagedKinematics = 30; // 可以被管理运动
+    SituationContact attackContact = 31; //要打击的目标
+    repeated SituationContact avoidContacts = 32; //要避开的目标
+    bool canManagedDetect = 33; // 可以被管理探测
+    bool canManagedAttack = 34; // 可以被管打击
+    repeated DetectionReport detectionReport = 35; //探测到的目标列表
+    //bool canManagedWeapon = 36; // 可以接管武器(暂不需要)
+    //repeated EnemyInfo enemyInfo = 35;//对立方所有单位位置信息
+    UnitRoute unitRoute = 36;//航路点
+    bool isFiring = 37;//当前单位是否开火（排除实体武器）
+
+    repeated ProfessionalData professionalData = 38;//单位上的专业信息
+
+
+
+}
+
+
+
+
+
+message EnemyInfo{
+    string id = 1;//对立单位id
+    string name = 2;//对立单位名称
+    double lon = 3; //所处经度
+    double lat = 4; //所处纬度
+    float alt = 5;//当前海拔高度
+}
+//伤害失火等级
+enum FireIntensityLevel {
+    NoFire = 0;//没有失火
+    MinorFire = 1;//小型失火
+    MajorFire = 2;//大型失火
+    SevereFie = 3;//严重失火
+    Conflagration = 4;//面临失火失控风险
+}
+//进水损坏等级
+enum FloodingIntensityLevel {
+    NoFlooding = 0;//没有进水
+    MinorFlooding = 1;//小规模进水
+    MajorFlooding = 2;//大规模进水
+    SevereFlooding = 3;//严重进水
+    Capsizing = 4;//面临沉没风险
+}
+//空间位置，经纬高
+message SpatialLocation {
+    double lon = 1; //所处经度
+    double lat = 2; //所处纬度
+    float alt = 3;//当前海拔高度
+}
+//姿态
+message Attitude {
+    float heading = 1;     //偏航
+    float roll = 2;      //滚转
+    float pitch = 3;    //俯仰
+}
+//在空武器相关数据
+message WeaponData {
+    string firingUnitId = 1 ;//发射实体Id
+    repeated ContactAndWeapon contactAndWeapon = 2;//
+    WeaponType weaponType = 3;//武器类型
+}
+//在空武器相关数据
+message WeaponArrayData {
+    string firingUnitId = 1 ;//发射实体Id
+    repeated ContactAndWeapon contactAndWeapon = 2;//
+}
+
+message ContactAndWeapon{
+    string contactId = 1;     //打击目标id
+    string weaponId = 2;     //武器 id
+}
+
+//实体状态
+enum UnitStatus {
+    Unassigned = 0;//无
+    OnPlottedCourse = 1;//在绘制航线
+    EngagedOffensive = 2;//参与进攻
+    EngagedDefensive = 3;//参与防守
+    OnAttackRun = 4;//进攻中
+    OnPatrol = 5;//巡逻
+    RTB = 6;//返回基地
+    Tasked = 7;
+    FormingUp = 8; // 正在重新组队
+    NONE_9 = 9;
+    RTB_Manual = 10;//手动返回基地
+    OnSupportMission = 11;//支援任务
+    OnFerryMission = 12;
+    HeadingToRefuelPoint = 13;//前往加油站
+    Refuelling = 14;//加油
+    RTB_MissionOver = 15;//任务完成返回基地
+    GroupLead_SlowingToAllowFormUp = 16;//领队放慢速度进行组队
+    NONE_17 = 17;
+    NONE_18 = 18;
+    RTB_Group = 19;//编队返航
+    RTB_CalledOff = 20;//取消返航
+    WaitForPathfinder = 21;//等待寻路
+    AttemptingToReestablishComms = 22;//尝试重新建立通讯
+}
+//飞机操作状态
+enum AirOpsCondition {
+    Airborne = 0; //在空
+    Parked = 1; //停放状态
+    TaxyingToTakeOff = 2;//正在滑行准备起飞
+    TaxyingToPark = 3;//正在滑行到停机位
+    TakingOff = 4;//正在起飞
+    Landing_PreTouchdown = 5;//最终进场
+    Landing_PostTouchdown = 6;//正在完成降落
+    Readying = 7;//正在进行出动准备
+    HoldingForAvailableTransit = 8;//等待可用的滑行道/升降机
+    HoldingForAvailableRunway = 9;//等待跑道空闲
+    HoldingOnLandingQueue = 10;//处于降落队列中
+    RTB_Air = 11;//正在返回基地
+    PreparingToLaunch = 12; //准备出动
+    ManoeuveringToRefuel = 13;//机动到加油阵位
+    Refuelling_Air = 14; //正在加油
+    OffloadingFuel = 15;//卸载燃油
+    DeployingDippingSonar = 16;//部署吊放声纳
+    EmergencyLanding = 17;//燃油量极低准备紧急降落
+    TaxyingToFlightDeck = 18;//移动到飞行甲板
+    BVRAttack = 19;//正在执行超视距攻击任务
+    BVRCrank = 20;//
+    Dogfight = 21;//近距离空战
+    TransferringCargo = 22;//转运货物
+    BVRDrag = 23;//正在执行超视距拖曳
+}
+
+//燃油状态
+message FuelStatus {
+    double currentFuel = 1; //当前燃油
+    double fuelBurnRate = 2; //当前燃油消耗率
+}
+message SensorStatusList{
+    repeated SensorStatus sensorStatus = 1;//传感器信息
+}
+
+//传感器状态
+message SensorStatus {
+    string id = 1;//传感器id
+    string name = 2;//传感器名称
+    SensorCategory sensorCategory = 3;//传感器类别
+    bool activeCapable = 4;//传感器是否具备主动激活
+    bool isActive = 5;//传感器当前是否已激活
+    ComponentStatus ComponentStatus = 6;//部件状态
+    repeated string sensorFrequency = 7;//照明
+    repeated string sensorSearchFreq= 8; //搜索追踪
+    float maxDist = 9;//最大探测距离
+    float maxHeight = 10;//最大探测高度
+    float beginAngle = 11;//探测起始角度
+    float endAngle = 12;//探测终止角度
+    bool canManagedDetect =13;//是否被接管
+    int32 startNum = 14;//传感器扇叶开启数量
+    message IsContactType{
+        bool isAirSearch=1;//空
+        bool isSurfaceSearch=2;//水面
+        bool isSubSearch=3;//水下
+        bool isLandSearchMobile=4;//地？
+        bool isLandSearchFixed=5;//地？
+    }
+    IsContactType isContactType=15;//支持探测的目标类型
+    float minDist = 16;//最小探测距离
+
+
+}
+enum SensorCategory {
+    Radar = 0;//雷达
+    Sonar = 1;//声纳
+    ECM = 2;//电子战
+}
+
+enum ComponentStatus {
+    unUse = 0;//不用
+    Operational = 1;//正常的
+    Damaged = 2;//破损
+    Destroyed = 3;//被毁
+}
+
+//目标信息
+message SituationContact {
+    string id = 1;//目标Id
+    string name = 2;//目标名称
+    string sideName = 3;//所属阵营
+    string model = 4;//目标型号
+    float speed = 5;//目标速度
+    ContactType contactType = 6;//目标类型
+    SpatialLocation location = 7;//空间位置
+    Attitude attitude = 8; //姿态
+    bool sideIsKinwn = 9;//是否已知所属阵营
+    bool isAltitudeKnown = 10;//是否已知高度
+    bool isHeadingKnown = 11;//是否已知航向
+    bool isSpeedKnown = 12;//是否已知速度
+    IdentificationStatus identificationStatus = 13;//识别状态
+    string detectorSideName = 14;//探测方阵营名称
+    bool hasUncertaintyArea = 15;//是否有不确定区域
+    repeated SpatialLocation uncertaintyArea = 16;//不确定区域
+    float timeSinceDetect = 17;//距上次探测的时间，单位秒
+    float age = 18;//重新探测时间
+    int32 weaponsAimingAtTheTarget = 19;//武器瞄准数量
+    string unitCategory = 20; //目标类型
+}
+enum ContactType {
+    Air = 0;//空中单位//
+    Missile = 1;//导弹//
+    Sur = 2;//水面单位//
+    Sub = 3;//水下目标
+    UndeterminedNaval = 4;//
+    AimPoint = 5;//目标点
+    Orbital = 6;//有轨道单位
+    Facility_Fixed = 7;//固定设施
+    Facility_Mobile = 8;//移动设施
+    Torpedo = 9;//鱼雷
+    Mine = 10;//地雷、水雷
+    Explosion = 11;//炸弹
+    Undetermined = 12;//未确定的
+    Decoy_Air = 13;//空中诱饵
+    Decoy_Surface = 14;//水面诱饵
+    Decoy_Land = 15;//地面诱饵
+    Decoy_Sub = 16;//水下诱饵
+    Sonobuoy = 17;//声呐浮标
+    Installation = 18;//军事基地
+    AirBase = 19;//空军基地
+    NavalBase = 20;//海军基地
+    MobileGroup = 21;//移动基地
+    ActivationPoint = 22;//触发点
+}
+
+enum IdentificationStatus {
+    Unknown = 0;//未知
+    KnownDomain = 1;//已知领域
+    KnownType = 2;//已知类型
+    KnownClass = 3;//已知级别
+    PreciseID = 4;//准确信息
+}
+
+//战报信息
+message AttackReport {
+    string fireUnitId = 1; //发射实体Id
+    string fireUnitName = 2;  //发射实体名称
+    string fireUnitModel = 3;  //发射实体型号
+    UnitType fireUnitType = 4;    //发射实体类型
+    string fireUnitSideName = 5;  //发射实体所属阵营
+    string weaponId = 6; //使用武器ID
+    string weaponName = 7;//使用武器名称
+    string weaponModel = 8; // 使用武器型号
+    string targetId = 9; //目标Id
+    string targetName = 10;  //目标名称
+    string targetModel = 11;  //目标型号
+    UnitType targetType = 12;  //目标类型
+    string targetSideName = 13;//目标所属阵营名称
+    bool isHit = 14;  //是否命中
+    int64 hitStep = 15;   //命中时帧数，当前时间-开始时间，单位秒
+    string hitTime = 16;  //命中时想定时间
+    SpatialLocation hitLocation = 17; //命中空间位置
+    string parentWeaponId = 18; //武器为弹道弹产生的战斗部时，在此提供弹道弹母体的id,方便与武器发射报告进行关联
+    float targetHealth = 19; //目标当前血量，百分比
+    float timeSinceLaunch = 20; //武器自发射运行时间
+    string targetSideId = 21;//目标所属阵营id
+}
+
+//探测报告
+message DetectionReport {
+    string targetId = 1; //目标Id
+    string targetName = 2;  //目标名称
+    string targetModel = 3;  //目标型号
+    string targetSideName = 4;//目标所属阵营名称
+    ContactType targetType = 5;  //目标类型
+    SpatialLocation targetLocation = 6; //目标空间位置
+    string detectorId = 7; //发现者实体Id
+    string detectorName = 8;  //发现者实体名称
+    string detectorModel = 9;  //发现者实体型号
+    UnitType detectorType = 10;    //发现者实体类型
+    string detectorSideName = 11;  //发现者所属阵营
+    string detectorSensorName = 12; //发现者使用传感器名称
+
+    SpatialLocation detectorLocation = 13; //发现者空间位置
+    int64 detectStep = 14;   //探测时帧数，当前时间-开始时间，单位秒
+    string detectTime = 15;  //探测时想定时间
+    SensorStatusList targetSensor = 16; //目标传感器信息
+    repeated string weaponIds = 17;
+    bool isSonobuoy = 18;//是否是声呐浮标
+}
+
+//目标丢失报告
+message LostReport {
+    string targetId = 1; //目标Id
+    string targetName = 2;  //目标名称
+    string targetModel = 3;  //目标型号
+    string targetSideName = 4;//目标所属阵营名称
+    ContactType targetType = 5;  //目标类型
+    SpatialLocation lostLocation = 6; //丢失时空间位置
+    int64 lostStep = 14;   //丢失时帧数，当前时间-开始时间，单位秒
+    string lostTime = 15;  //丢失时想定时间
+}
+
+//武器发射报告
+message WeaponFireReport {
+    string fireUnitId = 1; //发射实体Id
+    string fireUnitName = 2;  //发射实体名称
+    string fireUnitModel = 3;  //发射实体型号
+    UnitType fireUnitType = 4;    //发射实体类型
+    string fireUnitSideName = 5;  //发射实体所属阵营
+    SpatialLocation fireUnitLocation = 6; //发射实体空间位置
+    string weaponId = 7; //使用武器ID
+    string weaponName = 8;//使用武器名称
+    string weaponModel = 9; // 使用武器型号
+    string targetId = 10; //目标Id
+    string targetName = 11;  //目标名称
+    string targetModel = 12;  //目标型号
+    ContactType targetType = 13;  //目标类型
+    string targetSideName = 14;//目标所属阵营名称
+    SpatialLocation targetLocation = 15; //目标空间位置
+    int64 fireStep = 16;   //发射时帧数，当前时间-开始时间，单位秒
+    string fireTime = 17;  //发射时想定时间
+    string fireUnitSideId = 18;  //发射实体阵营id
+    string weaponUnitSideId = 19;  //武器实体id
+}
+
+//返回信息
+message ResponseData {
+    int32 code = 1;         //状态码
+    string message = 2;   //状态信息
+    string cmd = 3;
+    string data = 4;//具体数据
+}
+
+//携带ID及名称的返回信息格式
+message IdNameResponse {
+    ResponseData response = 1;//接口调用状态
+    string id = 2;  //id
+    string name = 3;  //名称
+}
+
+//仅需要ID,sideId的通用参数
+message IdRequest {
+    string id = 1;  //id
+    string sideName = 2; //sideId
+}
+
+//变更目指
+message AttackChangeRequest {
+    string unitId = 1;  //实体id
+    string sideName = 2; //阵营名称
+    string targetId = 3; //目标id
+}
+message SideMission{
+    repeated google.protobuf.Any details = 1;
+}
+message StrikeMissionList{
+    string sideName = 1; //阵营名称
+    repeated StrikeMission strikeMissions= 2;//任务集合
+}
+//打击任务
+message StrikeMission{
+    string id = 1;   //任务id
+    string name = 2;   //任务名称
+    string sideName = 3;   //所属阵营名称
+    StrikeType strikeType = 4;   //打击任务类型
+    string startTime = 5;   //任务开始时间
+    string endTime = 6;   //任务结束时间
+    repeated string strikeMembers = 7;   //执行打击的成员CombatUnit的id
+    repeated string escortMembers = 8;   //护航打击的成员CombatUnit的id
+    repeated string strikeTargets = 9;   //打击目标Contact的id
+    map<int32, int32> weaponLimits = 10;  //使用武器限制，武器DBID：武器数量
+    repeated WayPoint outRoute = 11;   //飞机出航航迹
+    repeated WayPoint returnRoute = 12;   //飞机返航航迹
+    int32 realiablity = 13; //任务信息
+}
+
+//打击任务类型
+enum StrikeType {
+    Air_Intercept = 0;//空中拦截
+    Land_Strike = 1;//对地攻击
+    Maritime_Strike = 2;//对舰攻击
+    Sub_Strike = 3;//反潜攻击
+}
+
+//巡逻任务
+message PatrolMission {
+    string id = 1;   //任务id
+    string name = 2;   //任务名称
+    string sideName = 3;   //所属阵营名称
+    PatrolType patrolType = 4;   //巡逻任务类型
+    string startTime = 5;   //任务开始时间
+    string endTime = 6;   //任务结束时间
+    repeated string patrolMembers = 7;   //执行巡逻的成员
+    string patrolArea = 8;   //巡逻区域
+    repeated WayPoint  outRoute = 9;   //飞机出航航迹
+    repeated WayPoint  returnRoute = 10;   //飞机返航航迹
+}
+
+enum PatrolType {
+    ASW = 0;  //反潜战斗巡逻
+    ASuW_Naval = 1;//对舰战斗巡逻
+    AAW = 2;//空中战斗巡逻
+    ASuW_Land = 3;//对地战斗巡逻
+    ASuW_Mixed = 4;//对地/对舰战斗巡逻
+    SEAD = 5;//对敌防空压制
+    SeaControl = 6;//制海巡逻
+}
+
+//支援任务
+message SupportMission {
+    string id = 1;  //任务id
+    string name = 2;  //任务名称
+    string sideName = 3;  //所属阵营名称
+    string startTime = 4;  //任务开始时间
+    string endTime = 5;  //任务结束时间
+    repeated string supportMembers = 6;  //执行支援任务的成员
+    string supportRoute = 7;  //支援航路
+    repeated WayPoint outRoute = 8;  //飞机出航航迹
+    repeated WayPoint returnRoute = 9;  //飞机返航航迹
+}
+
+//任务成员
+message MissionMember {
+    string missionId = 1;  //任务id
+    string unitId = 2;  //实体id
+    bool isEscort = 3;  //是否为护航，仅打击任务有效
+    string sideName = 4; //阵营id
+}
+
+//任务区域
+message MissionArea {
+    string missionId = 1;  //任务id
+    string areaId = 2;  //作战区域id
+    string sideName = 3;  //阵营id
+}
+
+
+//任务目标
+message StrikeMissionTarget {
+    string missionId = 1; //任务id
+    string targetsId = 2; //目标id
+    string sideName = 3; //阵营id
+}
+
+//实体部署位置
+message UnitPosition {
+    string id = 1;  //实体id
+    double lon = 2;  //所处经度
+    double lat = 3;  //所处纬度
+    float heading = 4;  //朝向角度0表示正北，0-360，不填为0，可以使用小数
+    float altitude = 5;  //当前海拔高度
+    float speed = 6;  //当前速度
+}
+
+
+//装备挂载
+message UnitMount {
+    string id = 1;   //实体id
+    repeated MountWeapon mountWeapons = 2;   //挂载
+}
+
+//设置飞机基地
+message BaseCarryUnit {
+    string id = 1;  //飞机实体id
+    string baseId = 2;  //基地实体id
+}
+
+//实体机动航路
+message UnitRoute {
+    string id = 1;  //实体id
+    repeated WayPoint  Route = 2;  //航路点
+}
+
+message WayPoint {
+    double lon = 1;  //经度
+    double lat = 2;  //纬度
+    float desiredAltitude = 3;  //期望高度
+    float desiredSpeed = 4;  //期望速度
+}
+
+//实体机动高度
+message UnitAltitude {
+    string  id = 1;    //实体id
+    float   altitude = 2;    //海拔高度单位米
+    AircraftAltitudePreset  aircraftPreset = 3;    //飞机高度预设
+    SubmarineDepthPreset    submarinePreset = 4;    //潜艇深度预设
+}
+
+//飞机高度预设枚举
+enum AircraftAltitudePreset {
+    AAPNone = 0;
+    MinAltitude = 1; //最低海拔高度
+    Low1000 = 2; //低海拔高度(1000英尺) 305米
+    Low2000 = 3; //低海拔高度(2000英尺) 610米
+    Medium12000 = 4; //中海拔高度(12000英尺) 3657米
+    High25000 = 5; //高海拔高度(25000英尺) 7620米
+    High36000 = 6; //高海拔高度(36000英尺) 10973米
+    MaxAltitude = 7;  //最高海拔高度
+}
+
+//潜艇深度预设枚举
+enum SubmarineDepthPreset {
+    SDPNone = 0;
+    Periscope = 1;// 潜望深度, 指潜艇潜望镜（其他升降装置）顶部高出水面0.5～1.0米的下潜深度， 常规潜艇艇体离水面大约为7—10米，核潜艇为9—15米
+    Shallow = 2; // 浅潜望深度
+    OverLayer = 3; // 水温跃变层之上
+    UnderLayer = 4; // 水温跃变层之下
+    MaxDepth = 5; // 最大深度
+    Surface = 6;  //水面
+}
+
+//实体机动速度
+message UnitSpeed {
+    string id = 1;   //实体id
+    float speed = 2;   //海拔高度单位米
+    UnitThrottlePreset preset = 3; //油门速度预设
+}
+
+//单位油门预设
+enum UnitThrottlePreset {
+    FullStop = 0; //完全停止
+    Loiter = 1; //游荡：留待（即悬停）
+    Cruise = 2; //巡航
+    Full = 3;    //满速
+    Flank = 4; //全速：拼了命了跑
+    UTPNone = 5;    //无
+}
+message AttackOrientation{
+    string attackerId = 1;  //攻击者id
+    int32 weapon = 2;  //打击者的weapon的DBid
+    int32 qty = 3;  //使用的数量
+    double lon = 4; //经度
+    double lat = 5;//纬度
+}
+message AttackOrientationw{
+    string attackerId = 1;  //攻击者id
+    double lon = 2; //经度
+    double lat = 3;//纬度
+}
+//DDS专用参数
+message Renew_Waypoint_Data{
+	int32   Waypoint_Num = 1;				//初始航迹点编号
+	double Waypoint_Lon = 2;				//初始航迹点经度
+	double Waypoint_Lat = 3;				//初始航迹点纬度
+	double Waypoint_H = 4;					//初始航迹点高度
+}
+//DDS专用参数
+message TarWaypoint_Data{
+	int32 MSL_num_b = 1;			// 导弹编号（从1开始）
+	string guid = 2;                //
+	double launch_Long = 3;					// 发射点经度	(-180 , 180]°
+	double launch_Latt = 4;					// 发射点纬度 [-90 , 90]°
+	double launch_Height = 5;				// 发射点高度 目标高度	(-1e5, 1e5) m
+	double tar_Long = 6;					// 目标经度	(-180 , 180]°
+	double tar_Latt = 7;					// 目标纬度 [-90 , 90]°
+	double tar_Height = 8;					// 目标高度 目标高度	(-1e5, 1e5) m
+	int32   Waypoint_Num = 9;				//航迹点个数（上限30）
+	repeated Renew_Waypoint_Data waypoints = 10;
+	string launch_Id = 11;           //发射车编号
+
+}
+
+//DDS专用参数
+message StruBeforeMGroundInputTarget{
+    int32 number_k = 1;		       //帧计数
+    int32 Update_sign = 2;              //装订更新标志位
+    double system_time = 3;				// 同步/系统时间 [0,86400)s
+    int32 Renew_MSL_num = 4;			//更新导弹个数（上限7）
+    repeated TarWaypoint_Data tarwaypoints = 5;//航迹 目指
+    bool launch_type = 6;               //是否为交战集的发射车
+}
+
+//DDS专用参数
+message StruBeforeMGroundInputTargets{
+    repeated StruBeforeMGroundInputTarget struBeforeMGroundInputTarget = 1;//射前装订数据
+}
+
+message StMGroundMoveList{
+    repeated StMGroundInputTargetMove stMGroundMove = 5;//导弹移动位置信息
+}
+
+//发给交战集态势实时参数//导弹打击目标移动位置信息
+message StMGroundInputTargetMove{
+    string unitId = 1;			//任务级导弹id
+    string baseId = 2;              //发射车id
+    string contactId = 3;           //打击目标id
+    double lon = 4;					//经度
+    double lat = 5;					//纬度
+    double height = 6;				//高度
+}
+
+//打击请求
+message AttackRequest {
+    string attackerId = 1;    //攻击者id
+    string contactId = 2;     //打击目标id
+    AttackOptions options = 3;  //打击选项
+    string weaponNumber = 4;  // 166弹号
+
+}
+//同时打击请求
+message AttackRequests {
+    string attackerId = 1;    //攻击者id
+    repeated MulTarInfo mutInfo = 2;  //多个目标信息
+
+}
+message MulTarInfo{
+    string contactId = 1;//打击目标id
+    AttackOptions options = 2;  //打击选项
+    string weaponNumber = 3;  // 166弹号
+}
+
+//打击返回
+message AttackResponse{
+    ResponseData response = 1;//接口调用状态
+    repeated WeaponData weaponData = 2; //武器信息
+}
+//打击选项
+message AttackOptions {
+    AttackMode mode = 1;  //打击模式
+    int32 weapon = 2;  //打击者的weapon的DBid
+    repeated WayPoint route = 3; //预设巡航弹航迹
+    int32 qty = 4;  //使用的数量
+}
+
+enum AttackMode {
+    AutoTargeted = 0; //自动打击
+    ManualWeaponAlloc = 1;    //手动打击
+}
+
+//传感器控制请求
+message SensorControlRequest {
+    string id = 1;   //实体id
+    string sensorid = 2;   //传感器id
+    bool state = 3;   //开启或关闭
+}
+
+//声纳浮标部署请求
+message SonobuoyDelpoyRequest {
+    string id = 1;  //实体id
+    bool passiveOrActive = 2;  //被动声呐浮标或者主动声呐浮标
+    bool shallowOrDeep = 3;  //浮标部署位置是浅深度（最大水下40m）还是最大深度（最大水下225m）
+}
+
+//战损战果报告
+message SideUseUpReport{
+    repeated UseUpReport useUpReport = 1;
+}
+message UseUpReport {
+    string sideName = 1; //阵营名称
+    repeated LostWeapon lostWeapons = 2 ; //消耗的武器list
+    repeated LostUnit lostUnits = 3; //损失的单位list
+    int32 lostWeaponTotalNum = 4;  //消耗的武器总数量
+    int32 lostUnitTotalNum = 5;  //损失的单位总数量
+    map<string , int32> fireComponentMalfunctioneds = 6;  //故障武器数量
+    repeated WeaponSources weaponSources = 7;//武器发射来源信息
+}
+
+//  战损战果报告 损失的单位
+message LostWeapon {
+    string weaponId = 1; //武器id
+    string weaponName = 2;//武器名称
+    int32 num = 3;  //损失的武器数量
+    string unitName = 4; //武器发射来源名称
+}
+//  战损战果报告 损失的单位
+message LostUnit {
+    string unitId = 1; //单位id
+    string unitName = 2;//单位名称
+    UnitType type = 3; //实体类型
+    int32 num = 4;  //损失的单位数量
+}
+
+//武器发射来源信息
+message WeaponSources {
+    string weaponId = 1; //武器id
+    string unitId = 2;//单位id
+    string unitName = 3; //单位名称
+    string weaponName = 4; //武器名称
+}
+
+message DamageStateReport {
+    string parentPlatformName = 1;//所属父级平台名称
+    PartsType partType = 2;//部件所属类别
+    string partName = 3; //部件名称
+    ComponentStatus componentStatus = 4;//部件状态 枚举
+    DamageSeverityFactor damageSeverityFactor = 5; //损伤严重程度 枚举
+}
+//任务时间
+message MissionDate{
+    string id = 1;//任务id 必填
+    string sideName = 2;//所属阵营 选填
+    string endTime = 3;  //任务结束时间 必填
+}
+//气象模型
+message WeatherData{
+    float temperature = 1; // 平均气温 范围[-50,50]
+    float rain = 2;//降雨量 范围[0,50]
+    float cloud = 3; // 天空云量 范围[0,10]
+    float seaState = 4; //风力/海况 范围[0,9]
+    string message = 5; // 天气描述情况
+}
+//部件所属类别
+enum PartsType {
+    Mount = 0;//挂架
+    Magazine = 1;//弹仓
+    Sensor = 2;//传感器
+    CommDevice = 3;//通讯与数据链
+    DockFacility = 4;//停靠设施
+    AirFacility = 5;//机场设施
+    Engine = 6;//动力
+}
+//损伤严重程度
+enum DamageSeverityFactor {
+    Light = 0;//轻微损伤
+    Medium = 1;//中等损伤
+    Heavy = 2;//严重损伤
+
+}
+
+//指挥关系
+message Relationship {
+    string superiorId = 1; //上级id
+    string subordinateId = 2;  //下级id
+}
+
+//设置通信链路通断状态
+message CommLinkStatus {
+    string originUnitId = 1; //发送端id
+    string destUnitId = 2;  //接收端id
+    bool commStatus = 3; //通信链路通断状态
+}
+//通信链路集合
+message CommLinkUnits {
+    repeated CommLinkUnit commLinkUnit = 3; //通信链路通断状态集合
+}
+
+//通信链路通断状态信息
+message CommLinkUnit {
+    ScenarioCombatUnit originUnit = 1; //发送端
+    ScenarioCombatUnit destUnit = 2;  //接收端
+    bool commStatus = 3; //通信链路通断状态
+}
+
+//手动干预发射单元是否故障
+message fireComponentUnit {
+    string unitId = 1; //实体id
+    bool fireComponentStatus = 3; //发射单元状态
+}
+//返回xml格式想定
+message ScenarioXml {
+    string xml = 1; //xml格式想定
+}
+
+//角反实体信息
+message JiaofanCombatUnit {
+    string id = 1;//实体id
+    string name = 2;  //实体名称
+    string sideName = 3;    //所属阵营名称
+    double lon = 6; //所处经度
+    double lat = 7; //所处纬度
+    float heading = 8;//朝向角度
+    bool autoDetectable = 11; //是否可被自动发现
+    repeated WayPoint Route = 15;  //航路点
+}
+
+
+// 环境区域
+message EnvironmentZones{
+    repeated EnvironmentZone environmentZone = 1;
+}
+message EnvironmentZone {
+    string id = 1;
+    string name = 2; //名称
+    repeated AreaPoint areas = 3; //参考点
+    WeatherData weather = 4; //天气
+}
+
+message EnvironmentZoneRequest {
+    string id = 1; //环境区域id
+    string name = 2; //名称
+    repeated AreaPoint areas = 3; //
+    WeatherData weather = 4; //
+}
+// bool参数
+message BoolRequest {
+    bool value = 1;
+}
+
+// 获取白天黑夜参数
+message DayOrNightRequest {
+    double longitude = 1;
+    double latitude = 2;
+}
+
+// 白天黑夜信息
+message DayOrNight {
+    EnumDayType dayType = 1;
+}
+
+// 白天黑夜枚举
+enum EnumDayType {
+    Day = 0;
+    Twiligh = 1;
+    Night = 2;
+}
+
+
+// 武器可靠度设置
+message RealiablityRequest{
+    map<int32, int32> weaponLimits = 1;  //武器DBID：可靠度
+}
+
+// 部署卫星到战场
+message createSatelliteRequest {
+    int32 DBID = 1; //卫星数据库id
+    int32 orbitIndex = 2; //卫星轨道索引
+    string sideName = 3;//阵营名称
+}
+
+//导出excel
+message exeportExcel {
+    string name = 3;//名称
+}
+
+//发布日志
+message LogMessages {
+    repeated LogMessage logMessage = 1;//日志
+}
+ //日志
+message LogMessage {
+    string logMessage = 1;//日志信息
+    string logMessageTime = 2;//日志时间
+    string sideName = 3;//阵营名称
+}
+
+message addWeaponRequest {
+    string unitID = 1;
+    int32 dbid = 2;
+    int32 qty = 3;
+}
+
+
+message DllModelRequest{
+    string unitId = 1; //仿真模型id
+    string dllName = 2; //动态库名称
+}
+
+message ParamResponse{
+    string unitId = 1; //仿真模型id
+    float turnSpeed = 2; //转速
+    float speed = 3; //速度
+    float heading = 4; //跺脚
+    float chaoxiang = 5; //朝向
+    float alt = 6; //海拔
+    string model = 7; //类型
+}
+
+//海洋环境数据
+message MarineEnvData{
+    string id = 1; //环境数据id
+    string name = 2; //环境数据名称
+    float temperature = 3; // 平均气温 范围[-50,50]
+    float rain = 4;//降雨量 范围[0,50]
+    float cloud = 5; // 天空云量 范围[0,10]
+    float seaState = 6; //风力/海况 范围[0,9]
+    repeated SoundEnvData soundEnvData = 7;
+    repeated AreaPoint areas = 8; // 划定区域
+}
+message SoundEnvData{
+    float depth = 1; // 深度
+    float temp = 2;//水温
+    float salinity = 3; // 盐度
+    float density = 4; //水密度
+    float pressure = 5; //水下 压强
+
+}
+//全部任务信息
+message AllTaskText{
+    repeated TaskText taskText=1;
+}
+//全部任务信息
+message TaskText{
+    string sideId = 1;//阵营id
+    repeated StrikeMission strikeMission = 2;//打击任务
+    repeated PatrolMission patrolMission = 3;//巡逻任务
+    repeated SupportMission supportMission = 4;//支援任务
+
+}
+
+//---------------------------武大接口所需对象信息----------------------------
+//单装信息
+//message SituationDataw {
+//    int32 forceSide = 1;//阵营
+//    int32 activeLvl = 2;//血量
+//    Attitudew attitude = 3;
+//    AttrMapw attrMap = 4;
+//    EntitySpatialCoordw entitySpatialCoord = 5;
+//    repeated LoadMapw loadMap = 6;
+//    LogisticStatesw logisticStates = 7;
+//    InnerStatesw innerstates = 8;
+//    string mdlID = 9;//实体id
+//    string mdlType = 10;//装备编码，可参照兵力设置。
+//    int64 reportTime = 11;//上报时间
+//    StateMapw stateMap = 12;
+//    Velocityw velocity = 13;
+//    int32 IsUnderAttack = 14; // 如果是敌方实体 该值为是否被攻击 1为被攻击 0为未攻击 -1为无意义
+//}
+
+//单装信息
+message SituationDataw {
+    string forceSide = 1;
+    int32 activeLvl = 2;
+
+    message Attitudew {
+        float pitch = 1;
+        float roll = 2;
+        float yaw = 3;
+    }
+    Attitudew attitude = 3;
+
+    message AttrMapw {
+        string AirBase = 1;
+    }
+    AttrMapw attrMapw = 4;
+
+    message EntitySpatialCoordw {
+        double altitude = 1;
+        double latitude = 2;
+        double longitude = 3;
+    }
+    EntitySpatialCoordw entitySpatialCoord = 5;
+
+    message LoadMapw {
+        int32 offensive = 1;
+        int32 offenseless = 2;
+    }
+    LoadMapw loadMap = 6;
+
+    message LogisticStatesw {
+        float oil = 1;   //油量百分
+        string oilStatus = 2;//燃油状态
+    }
+    LogisticStatesw logisticStates = 7;
+
+    message InnerStatesw {
+        int32 IsJamReaction = 1;
+    }
+    InnerStatesw innerstates = 8;
+
+    string mdlID = 9;
+    string mdlType = 10;
+    int64 reportTime = 11;
+
+    message StateMapw {
+        float FuelBurnRate = 1;
+        int32 EcmStatus = 2;
+        int32 RadarStatus = 3;
+        int32 SonarStatus = 4;
+        string AirStatus = 5;
+        int32 RemainDistance = 6;
+        string UnitStatus = 7;
+        int32 IdentifyStatus = 8;
+    }
+    StateMapw stateMap = 12;
+
+    message Velocityw {
+        float vx = 1;
+        float vy = 2;
+        float vz = 3;
+    }
+    Velocityw velocity = 13;
+    int32 IsUnderAttack = 14; // 如果是敌方实体 该值为是否被攻击 1为被攻击 0为未攻击 -1为无意义
+
+    message MaxRange{
+        double maxAir=1;//对空0
+        double maxSubsurface=2;//水下1
+        double maxSurface=3;//水面2
+        double maxLand=4;//地面3
+    }
+    MaxRange maxRange = 15;//最大攻击距离
+    UnitCategory unitCategory = 16; //单位所属类型
+    bool isCanManaged=17;//单位是否被智能体接管
+    string missionId = 18;//任务id
+    int32 missionType = 19;//任务类型
+    repeated int32 unitTarget = 20;//单位可以攻击的目标类型
+    message WeaponNumber{
+        int32 airNum=1;//对空中
+        int32 subNum=2;//水下
+        int32 shipNum=3;//水面
+    }
+    WeaponNumber weaponNumber = 21;//武器数量
+    int32 contactType = 22;//目标所属类型
+}
+//返回信息
+message ResponseDataw {
+    int32 code = 1;         //状态码 1：成功  0失败
+    string error_message=2;
+
+}
+message EndSignalw {
+    int32 code = 1;         //状态码 1：结束  0 ：未结束 2：暂停 3：开始
+}
+message TimeCompression {
+    int32 timeCompression = 1;//加速信息0:1倍、1:2倍、2:5倍、3:15倍
+}
+//单装信息s
+message SituationDatas {
+    repeated SituationDataw situaction = 1;    //阵营数据
+}
+
+
+
+
+
+//战损报告s
+message UseUpReports{
+    repeated UseUpReportw useUpReport = 1;
+}
+//战损报
+message UseUpReportw {
+    string forceSide = 1; //阵营
+    string id = 2;   //被击中单位id
+    string type = 3; // 损失的单位类型  船 飞机  潜艇 导弹
+    int32 time =4; //被击中的时间
+    float damage_degree=5; //被击中单位损失程度 如果没有击中则为0
+}
+//战报信息s
+message AttackReports {
+    repeated AttackReportw attackReport = 1;
+}
+//战报信息
+message AttackReportw {
+    string launch_platform_id = 1; //发射载体id 是船发射的 还是飞机发射的
+    string attack_target_type = 2;  //被击中单位类型 如果没击中则返回空
+    bool hit = 3; //是否命中
+    int32 fire_time= 4;  //发射时帧数
+    float target_damage_degree=5; //被击中单位损失程度 如果没有击中则为0
+    string weaponId = 6;//武器单位id
+}
+//探测报告s
+message DetectionReports{
+
+    repeated DetectionReportw detectionReport = 1;
+
+}
+//探测报告
+message DetectionReportw //探测新的实体报告，就是相对上一帧率的多发现的对方实体信息
+{
+    string targetId = 1; //目标Id
+    string targetType = 2;    //目标类型
+    string detectorId = 3;         // 如果是声呐浮标发现的 这里的发现者实体Id则为部署这个声呐浮标的实体id
+    string detectorType = 4;    // 发现者实体类型
+    int64 detectStep = 5;   //探测时帧数 如果是声呐浮标发现的 这里是投浮标的帧数
+    bool isSonobuoy = 6; // 是否是声呐浮标发现的
+}
+//仅需要ID
+message IdRequestw {
+    string mdlID = 1;  //id
+}
+//实体机动航路
+message UnitRoutew {
+    string mdlID = 1;  //实体id
+    repeated WayPointw  Route = 2;  //航路点
+}
+message WayPointw {
+    double longitude = 1;  //经度
+    double latitude = 2;  //纬度
+    int32 altitude = 3;  //离散化后的期望高度
+    int32 velocity = 4;  //离散化后的期望速度
+}
+
+// # 离散化的速度预设值  完全停止,悬停,巡航,满速,全速
+
+
+// # 将altitude映射到0-5级  0-5级
+
+// # 飞机高度
+// # 最低海拔高度
+// # 低海拔高度(1000英尺) 305米
+// # 低海拔高度(2000英尺) 610米
+// # 中海拔高度(12000英尺) 3657米
+// # 高海拔高度(25000英尺) 7620米
+// # 最高海拔高度
+
+
+// #潜艇深度
+// # 水面
+// # 潜望深度, 指潜艇潜望镜（其他升降装置）顶部高出水面0.5～1.0米的下潜深度， 常规潜艇艇体离水面大约为7—10米，核潜艇为9—15米
+// # 浅潜望深度
+// # 水温跃变层之上
+// # 水温跃变层之下
+// # 最大深度
+//实体机动高度
+message UnitAltitudeAndSpeedw {
+    string  mdlID = 1;              //实体id
+    int32  velocity = 2;  //速度
+    int32  altitude = 3; //海拔离散化的高度（深度）单位
+
+}
+//打击请求
+message AttackRequestw {
+    string attackerId = 1;    //攻击者id
+    string contactId = 2;     //打击目标id
+}
+//打击返回
+message AttackResponsew{
+    ResponseDataw response = 1;//接口调用状态
+}
+//传感器控制请求
+message SensorControlRequestw {
+    string id = 1;   //实体id
+    bool radar = 2; //雷达
+    bool sonar = 3; //声纳
+    bool ecm = 4;   //电子战传感器运行状态,true：开启,false:关闭，为空时保持现状
+
+}
+//声纳浮标部署请求
+message SonobuoyDelpoyRequestw {
+    string id = 1;  //实体id
+    bool passiveOrActive = 2;  //被动声呐浮标或者主动声呐浮标
+    bool shallowOrDeep = 3;  // 浮标部署位置是浅深度（最大水下40m）还是最大深度（最大水下225m）
+    //false:浅深度
+    //true：最大深度
+
+}
