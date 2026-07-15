@@ -200,6 +200,9 @@ class SymbolicBusinessRuleTests(unittest.TestCase):
         self.assertEqual(facts.target_id, "ship-contact")
         self.assertEqual(facts.attack_altitude_level, 1)
         self.assertEqual(facts.expected_weapon_type, "ANTI_SHIP_MISSILE")
+        self.assertIsNotNone(facts.target_evaluation)
+        self.assertTrue(facts.target_evaluation.immediate_candidate)
+        self.assertTrue(facts.target_evaluation.attack_request_allowed)
         self.assertEqual(decision.conclusion, Conclusion.REQUEST_ATTACK)
 
     def test_5000m_air_target_height_boundary_maps_to_levels_3_and_5(self):
@@ -283,6 +286,10 @@ class SymbolicBusinessRuleTests(unittest.TestCase):
             result.decisions["own-4"].conclusion,
             Conclusion.HOLD,
         )
+        fourth_evaluation = result.facts["own-4"].target_evaluation
+        self.assertIsNotNone(fourth_evaluation)
+        self.assertTrue(fourth_evaluation.concurrency_blocked)
+        self.assertFalse(fourth_evaluation.attack_request_allowed)
 
     def test_patrol_area_boundary_and_500m_allow_sonobuoy(self):
         patrol_aircraft = unit(

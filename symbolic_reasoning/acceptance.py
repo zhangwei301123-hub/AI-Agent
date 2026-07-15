@@ -9,10 +9,28 @@ import math
 import statistics
 import tracemalloc
 from time import perf_counter_ns
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
-from .agent import Conclusion, Decision, ReasoningFacts, SymbolicReasoningAgent
-from .entity import TargetDomain
+from .agent import (
+    Conclusion,
+    Decision,
+    ReasoningFacts,
+    SymbolicReasoningAgent,
+    TargetEvaluation,
+)
+from .entity import EncodedEntity, TargetDomain
+from .symbolic_reasoning4test import SymbolicReasoningEnv
 
 
 BOOLEAN_FACT_NAMES = (
@@ -31,6 +49,15 @@ BOOLEAN_FACT_NAMES = (
     "interceptor_limit_reached",
     "is_aircraft",
     "buoy_conditions_met",
+)
+
+WORST_CASE_MAX_ENTITIES = 700
+WORST_CASE_OWN_ENTITIES = WORST_CASE_MAX_ENTITIES // 2
+WORST_CASE_TARGET_ENTITIES = (
+    WORST_CASE_MAX_ENTITIES - WORST_CASE_OWN_ENTITIES
+)
+WORST_CASE_TARGET_EVALUATIONS = (
+    WORST_CASE_OWN_ENTITIES * WORST_CASE_TARGET_ENTITIES
 )
 
 
@@ -269,18 +296,30 @@ def _valid_decision(decision: Decision) -> bool:
     )
 
 
-def _valid_explanation(decision: Decision) -> bool:
+def _valid_explanation_text(decision: Decision, explanation: str) -> bool:
     if not decision.inference_path:
         return False
     if not any(step.rule_id == decision.rule_id for step in decision.inference_path):
         return False
-    explanation = decision.explanation
     return (
-        "推理路径" in explanation
+        isinstance(explanation, str)
+        and "推理路径" in explanation
         and "结论" in explanation
         and decision.rule_id in explanation
         and all(step.rule_id in explanation for step in decision.inference_path)
         and all(step.evidence for step in decision.inference_path)
+    )
+
+
+def _valid_explanation(decision: Decision) -> bool:
+    return _valid_explanation_text(decision, decision.explanation)
+
+
+def _complete_explanation_text(decision: Decision, explanation: str) -> bool:
+    return _valid_explanation_text(decision, explanation) and all(
+        evidence in explanation
+        for step in decision.inference_path
+        for evidence in step.evidence
     )
 
 
@@ -420,42 +459,269 @@ def _percentile(values: List[float], percentile: float) -> float:
     return ordered[index]
 
 
+def _benchmark_operation(
+    operation: Callable[[], Any],
+    iterations: int,
+    memory_iterations: Optional[int] = None,
+) -> Tuple[Dict[str, Any], Any]:
+    """计时并测量一次操作；返回指标和最后一次操作结果。"""
+
+    if iterations <= 0:
+        raise ValueError("iterations 必须大于 0")
+    if memory_iterations is None:
+        memory_iterations = iterations
+    if memory_iterations <= 0:
+        raise ValueError("memory_iterations 必须大于 0")
+
+    for _ in range(min(10, iterations)):
+        operation()
+
+    durations_ms: List[float] = []
+    last_result: Any = None
+    for _ in range(iterations):
+        start_ns = perf_counter_ns()
+        last_result = operation()
+        durations_ms.append((perf_counter_ns() - start_ns) / 1_000_000.0)
+
+    tracemalloc.start()
+    try:
+        for _ in range(memory_iterations):
+            last_result = operation()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    return (
+        {
+            "iterations": iterations,
+            "mean_ms": round(statistics.mean(durations_ms), 6),
+            "p95_ms": round(_percentile(durations_ms, 0.95), 6),
+            "max_ms": round(max(durations_ms), 6),
+            "peak_memory_mib": round(
+                peak_bytes / (1024.0 * 1024.0), 6
+            ),
+        },
+        last_result,
+    )
+
+
+def _worst_case_payload() -> Dict[str, Any]:
+    """构造 700 实体的最大笛卡尔积目标遍历场景。"""
+
+    own_side_id = "acceptance-own-side"
+    units: List[Dict[str, Any]] = []
+    for index in range(WORST_CASE_OWN_ENTITIES):
+        units.append(
+            {
+                "guid": "own-aircraft-{:03d}".format(index),
+                "name": "性能测试我方飞机{:03d}".format(index),
+                "SideId": own_side_id,
+                "IsContact": False,
+                "IsWeapon": False,
+                "unitType": 0,
+                "unitCategory": 0,
+                "longitude": 120.0 + (index % 25) * 0.0001,
+                "latitude": 30.0 + (index // 25) * 0.0001,
+                "altitude": 8000.0,
+                "heading": 90.0,
+                "BloodAmount": 100.0,
+                "rangeStrike_Air": 500.0,
+                "weaponNumber": {"airNum": WORST_CASE_TARGET_ENTITIES},
+                "Icon2D": "/Aircraft/acceptance-own.png",
+            }
+        )
+
+    for index in range(WORST_CASE_TARGET_ENTITIES):
+        units.append(
+            {
+                "guid": "enemy-aircraft-{:03d}".format(index),
+                "contactGuid": "enemy-contact-{:03d}".format(index),
+                "name": "性能测试敌方飞机{:03d}".format(index),
+                "SideId": "acceptance-enemy-side",
+                "IsContact": True,
+                "IsWeapon": False,
+                "unitType": 0,
+                "unitCategory": 0,
+                "longitude": 120.1 + (index % 25) * 0.0001,
+                "latitude": 30.1 + (index // 25) * 0.0001,
+                "altitude": 8000.0,
+                "heading": 270.0,
+                "BloodAmount": 100.0,
+                "Icon2D": "/Aircraft/acceptance-target.png",
+            }
+        )
+
+    return {
+        "data": {
+            "sideGuid": own_side_id,
+            "data": {
+                "ScenName": "symbolic-reasoning-worst-case",
+                "CurrentTime": "2026-01-01T00:00:00+00:00",
+                "UnitList": units,
+            },
+        }
+    }
+
+
+class _InstrumentedPerformanceEnv(SymbolicReasoningEnv):
+    """核验性能样本实际经过了全部目标和导弹候选遍历。"""
+
+    def __init__(self) -> None:
+        super().__init__(max_entities=WORST_CASE_MAX_ENTITIES)
+        self.target_evaluations = 0
+        self.incoming_candidates_scanned = 0
+
+    def reset_performance_counters(self) -> None:
+        self.target_evaluations = 0
+        self.incoming_candidates_scanned = 0
+
+    def _evaluate_target(
+        self,
+        own: EncodedEntity,
+        target: EncodedEntity,
+        planned_attackers: Mapping[str, Set[str]],
+        planned_interceptors: Mapping[str, int],
+    ) -> TargetEvaluation:
+        self.target_evaluations += 1
+        return super()._evaluate_target(
+            own,
+            target,
+            planned_attackers,
+            planned_interceptors,
+        )
+
+    def _find_incoming_missile(
+        self, own: EncodedEntity, targets: Sequence[EncodedEntity]
+    ) -> Optional[EncodedEntity]:
+        self.incoming_candidates_scanned += len(targets)
+        return super()._find_incoming_missile(own, targets)
+
+
 def test_performance(
     agent: SymbolicReasoningAgent,
     iterations: int,
     max_p95_ms: float,
     max_peak_memory_mib: float,
+    worst_case_iterations: int = 5,
+    max_worst_case_p95_ms: float = 5000.0,
+    max_worst_case_peak_memory_mib: float = 128.0,
+    max_explanation_p95_ms: float = 5.0,
 ) -> Dict[str, Any]:
-    if iterations <= 0:
-        raise ValueError("iterations 必须大于 0")
     facts = _facts()
-    for _ in range(min(100, iterations)):
-        agent.reason(facts)
+    reasoning_core, core_decision = _benchmark_operation(
+        lambda: agent.reason(facts),
+        iterations,
+    )
+    reasoning_core.update(
+        {
+            "passed": (
+                reasoning_core["p95_ms"] <= max_p95_ms
+                and reasoning_core["peak_memory_mib"]
+                <= max_peak_memory_mib
+            ),
+            "max_p95_ms": max_p95_ms,
+            "max_peak_memory_mib": max_peak_memory_mib,
+        }
+    )
 
-    durations_ms: List[float] = []
-    for _ in range(iterations):
-        start_ns = perf_counter_ns()
-        agent.reason(facts)
-        durations_ms.append((perf_counter_ns() - start_ns) / 1_000_000.0)
+    reasoning_with_explanation, full_explanation = _benchmark_operation(
+        lambda: agent.reason(facts).explanation,
+        iterations,
+    )
+    explanation_complete = _complete_explanation_text(
+        core_decision,
+        full_explanation,
+    )
+    reasoning_with_explanation.update(
+        {
+            "passed": (
+                explanation_complete
+                and reasoning_with_explanation["p95_ms"]
+                <= max_explanation_p95_ms
+                and reasoning_with_explanation["peak_memory_mib"]
+                <= max_peak_memory_mib
+            ),
+            "complete_explanation_verified": explanation_complete,
+            "explanation_characters": len(full_explanation),
+            "max_p95_ms": max_explanation_p95_ms,
+            "max_peak_memory_mib": max_peak_memory_mib,
+        }
+    )
 
-    tracemalloc.start()
-    for _ in range(iterations):
-        agent.reason(facts)
-    _, peak_bytes = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    payload = _worst_case_payload()
+    performance_env = _InstrumentedPerformanceEnv()
 
-    mean_ms = statistics.mean(durations_ms)
-    p95_ms = _percentile(durations_ms, 0.95)
-    peak_memory_mib = peak_bytes / (1024.0 * 1024.0)
+    def run_worst_case() -> Dict[str, Any]:
+        performance_env.reset_performance_counters()
+        result = performance_env.step(payload, execute_commands=False)
+        explanations = tuple(
+            decision.explanation for decision in result.decisions.values()
+        )
+        return {
+            "entities": len(result.situation.entities),
+            "own_entities": len(result.situation.own_entities),
+            "target_entities": len(result.situation.targets),
+            "target_evaluations": performance_env.target_evaluations,
+            "incoming_candidates_scanned": (
+                performance_env.incoming_candidates_scanned
+            ),
+            "decisions": len(result.decisions),
+            "generated_explanations": len(explanations),
+            "explanation_characters": sum(len(item) for item in explanations),
+        }
+
+    worst_case, observation = _benchmark_operation(
+        run_worst_case,
+        worst_case_iterations,
+        memory_iterations=1,
+    )
+    verification_result = performance_env.step(payload, execute_commands=False)
+    observation["complete_explanations"] = sum(
+        _complete_explanation_text(decision, decision.explanation)
+        for decision in verification_result.decisions.values()
+    )
+    workload_verified = (
+        observation["entities"] == WORST_CASE_MAX_ENTITIES
+        and observation["own_entities"] == WORST_CASE_OWN_ENTITIES
+        and observation["target_entities"] == WORST_CASE_TARGET_ENTITIES
+        and observation["target_evaluations"]
+        == WORST_CASE_TARGET_EVALUATIONS
+        and observation["incoming_candidates_scanned"]
+        == WORST_CASE_TARGET_EVALUATIONS
+        and observation["decisions"] == WORST_CASE_OWN_ENTITIES
+        and observation["generated_explanations"]
+        == WORST_CASE_OWN_ENTITIES
+        and observation["complete_explanations"]
+        == WORST_CASE_OWN_ENTITIES
+        and observation["explanation_characters"] > 0
+    )
+    worst_case.update(observation)
+    worst_case.update(
+        {
+            "passed": (
+                workload_verified
+                and worst_case["p95_ms"] <= max_worst_case_p95_ms
+                and worst_case["peak_memory_mib"]
+                <= max_worst_case_peak_memory_mib
+            ),
+            "workload_verified": workload_verified,
+            "max_p95_ms": max_worst_case_p95_ms,
+            "max_peak_memory_mib": max_worst_case_peak_memory_mib,
+        }
+    )
+
     return {
-        "passed": p95_ms <= max_p95_ms and peak_memory_mib <= max_peak_memory_mib,
-        "iterations": iterations,
-        "mean_ms": round(mean_ms, 6),
-        "p95_ms": round(p95_ms, 6),
-        "max_ms": round(max(durations_ms), 6),
-        "max_p95_ms": max_p95_ms,
-        "peak_memory_mib": round(peak_memory_mib, 6),
-        "max_peak_memory_mib": max_peak_memory_mib,
+        "passed": all(
+            item["passed"]
+            for item in (
+                reasoning_core,
+                reasoning_with_explanation,
+                worst_case,
+            )
+        ),
+        "reasoning_core": reasoning_core,
+        "reasoning_with_full_explanation": reasoning_with_explanation,
+        "worst_case_end_to_end": worst_case,
     }
 
 
@@ -463,6 +729,10 @@ def run_acceptance(
     performance_iterations: int = 10000,
     max_p95_ms: float = 5.0,
     max_peak_memory_mib: float = 16.0,
+    worst_case_iterations: int = 5,
+    max_worst_case_p95_ms: float = 5000.0,
+    max_worst_case_peak_memory_mib: float = 128.0,
+    max_explanation_p95_ms: float = 5.0,
 ) -> Dict[str, Any]:
     agent = SymbolicReasoningAgent()
     requirements = {
@@ -474,6 +744,12 @@ def run_acceptance(
             iterations=performance_iterations,
             max_p95_ms=max_p95_ms,
             max_peak_memory_mib=max_peak_memory_mib,
+            worst_case_iterations=worst_case_iterations,
+            max_worst_case_p95_ms=max_worst_case_p95_ms,
+            max_worst_case_peak_memory_mib=(
+                max_worst_case_peak_memory_mib
+            ),
+            max_explanation_p95_ms=max_explanation_p95_ms,
         ),
     }
     return {
@@ -504,11 +780,25 @@ def main(argv: Sequence[str] = None) -> int:
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--max-p95-ms", type=float, default=5.0)
     parser.add_argument("--max-memory-mib", type=float, default=16.0)
+    parser.add_argument("--worst-case-iterations", type=int, default=5)
+    parser.add_argument(
+        "--max-worst-case-p95-ms", type=float, default=5000.0
+    )
+    parser.add_argument(
+        "--max-worst-case-memory-mib", type=float, default=128.0
+    )
+    parser.add_argument(
+        "--max-explanation-p95-ms", type=float, default=5.0
+    )
     args = parser.parse_args(argv)
     report = run_acceptance(
         performance_iterations=args.iterations,
         max_p95_ms=args.max_p95_ms,
         max_peak_memory_mib=args.max_memory_mib,
+        worst_case_iterations=args.worst_case_iterations,
+        max_worst_case_p95_ms=args.max_worst_case_p95_ms,
+        max_worst_case_peak_memory_mib=args.max_worst_case_memory_mib,
+        max_explanation_p95_ms=args.max_explanation_p95_ms,
     )
     _print_report(report)
     return 0 if report["passed"] else 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -11,9 +12,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from log import Log
-
-from .agent import Conclusion, Decision, ReasoningFacts, SymbolicReasoningAgent
+from .agent import (
+    Conclusion,
+    Decision,
+    ReasoningFacts,
+    SymbolicReasoningAgent,
+    TargetEvaluation,
+)
 from .entity import (
     EncodedEntity,
     EncodedSituation,
@@ -148,13 +153,13 @@ class SymbolicReasoningEnv:
                 )
                 continue
 
-            target = self._select_target(
+            selected = self._select_target(
                 own,
                 targets,
                 planned_attackers,
                 planned_interceptors,
             )
-            if target is None:
+            if selected is None:
                 facts_by_entity[own.command_id] = ReasoningFacts(
                     entity_id=own.command_id,
                     own_platform_type=own.domain,
@@ -171,38 +176,9 @@ class SymbolicReasoningEnv:
                 )
                 continue
 
-            target_id = target.command_id
-            distance_km = own.distance_to_km(target)
-            strike_range_km = own.strike_range_for(target)
-            weapon_count = own.weapon_count_for(target)
-            target_is_missile = (
-                target.is_weapon and target.domain is TargetDomain.AIR
-            )
-            heading_difference = self._heading_difference(own, target)
-            aimed = (
-                True
-                if own.domain is TargetDomain.SURFACE
-                else heading_difference < self.aim_tolerance_deg
-            )
-            active_attackers = self.engagement_state.active_attackers(target_id)
+            target, evaluation = selected
+            target_id = evaluation.target_id
             planned_for_target = planned_attackers.setdefault(target_id, set())
-            slot_available = self.engagement_state.slot_available(
-                own.command_id, target_id, planned_for_target
-            )
-            already_attacking = self.engagement_state.is_attacking(
-                own.command_id, target_id
-            )
-            interceptors_launched = self.engagement_state.interceptors_launched(
-                target_id
-            )
-            target_type_allowed = (
-                target.domain is not TargetDomain.UNKNOWN
-                and strike_range_km > 0.0
-            )
-            within_range = (
-                target_type_allowed and distance_km <= strike_range_km
-            )
-            safety_clearance = own.communication_ok and not own.radar_jammed
 
             facts = ReasoningFacts(
                 entity_id=own.command_id,
@@ -210,33 +186,31 @@ class SymbolicReasoningEnv:
                 target_id=target_id,
                 target_entity_id=target.entity_id,
                 target_domain=target.domain,
-                target_is_missile=target_is_missile,
+                target_is_missile=evaluation.target_is_missile,
                 detected_target_count=len(targets),
-                attack_authorized=own.commandable,
-                target_type_allowed=target_type_allowed,
-                weapon_available=weapon_count > 0,
-                compatible_weapon_count=weapon_count,
+                attack_authorized=evaluation.attack_authorized,
+                target_type_allowed=evaluation.target_type_allowed,
+                weapon_available=evaluation.weapon_available,
+                compatible_weapon_count=evaluation.compatible_weapon_count,
                 expected_weapon_type=self._expected_weapon_type(target.domain),
-                within_attack_range=within_range,
-                distance_km=distance_km,
-                max_attack_range_km=strike_range_km,
-                aimed_at_target=aimed,
-                heading_difference_deg=heading_difference,
-                safety_clearance=safety_clearance,
-                chase_allowed=(
-                    own.is_aircraft
-                    and own.commandable
-                    and safety_clearance
-                    and target_type_allowed
-                    and weapon_count > 0
+                within_attack_range=evaluation.within_attack_range,
+                distance_km=evaluation.distance_km,
+                max_attack_range_km=evaluation.max_attack_range_km,
+                aimed_at_target=evaluation.aimed_at_target,
+                heading_difference_deg=evaluation.heading_difference_deg,
+                safety_clearance=evaluation.safety_clearance,
+                chase_allowed=evaluation.chase_allowed,
+                concurrency_slot_available=(
+                    evaluation.concurrency_slot_available
                 ),
-                concurrency_slot_available=slot_available,
                 active_attackers_on_target=(
-                    active_attackers + len(planned_for_target)
+                    evaluation.active_attackers_on_target
                 ),
-                already_attacking_target=already_attacking,
-                interceptors_launched=interceptors_launched
-                + planned_interceptors.get(target_id, 0),
+                already_attacking_target=(
+                    evaluation.already_attacking_target
+                ),
+                interceptors_launched=evaluation.interceptors_launched,
+                target_evaluation=evaluation,
                 target_lon=target.longitude,
                 target_lat=target.latitude,
                 attack_altitude_level=self._attack_altitude_level(own, target),
@@ -248,28 +222,11 @@ class SymbolicReasoningEnv:
             )
             facts_by_entity[own.command_id] = facts
 
-            # 与 agent 的 REQUEST_ATTACK 条件保持一致。预留只在本帧防并发；
-            # 执行失败不写入 EngagementState，等同于自动回滚。
-            will_request_attack = (
-                facts.attack_authorized
-                and facts.safety_clearance
-                and facts.target_type_allowed
-                and facts.weapon_available
-                and facts.within_attack_range
-                and facts.concurrency_slot_available
-                and not facts.already_attacking_target
-                and (
-                    own.domain is TargetDomain.SURFACE
-                    or facts.aimed_at_target
-                )
-                and (
-                    not target_is_missile
-                    or facts.interceptors_launched < 4
-                )
-            )
-            if will_request_attack:
+            # 统一使用 TargetEvaluation 预留本帧名额；执行失败不写入
+            # EngagementState，等同于自动回滚。
+            if evaluation.attack_request_allowed:
                 planned_for_target.add(own.command_id)
-                if target_is_missile:
+                if evaluation.target_is_missile:
                     planned_interceptors[target_id] = (
                         planned_interceptors.get(target_id, 0) + 1
                     )
@@ -282,38 +239,29 @@ class SymbolicReasoningEnv:
         targets: Sequence[EncodedEntity],
         planned_attackers: Mapping[str, Set[str]],
         planned_interceptors: Mapping[str, int],
-    ) -> Optional[EncodedEntity]:
+    ) -> Optional[Tuple[EncodedEntity, TargetEvaluation]]:
         """射程内合法目标优先；仅飞机可在没有射程内目标时选超距目标。"""
 
-        immediate: List[EncodedEntity] = []
-        pursuit: List[EncodedEntity] = []
-        diagnostic: List[EncodedEntity] = []
+        immediate: List[Tuple[EncodedEntity, TargetEvaluation]] = []
+        pursuit: List[Tuple[EncodedEntity, TargetEvaluation]] = []
+        diagnostic: List[Tuple[EncodedEntity, TargetEvaluation]] = []
         for target in targets:
             if target.domain is TargetDomain.UNKNOWN:
                 continue
-            diagnostic.append(target)
-            strike_range = own.strike_range_for(target)
-            weapon_count = own.weapon_count_for(target)
-            if strike_range <= 0.0 or weapon_count <= 0:
-                continue
-            target_id = target.command_id
-            planned = planned_attackers.get(target_id, set())
-            if not self.engagement_state.slot_available(
-                own.command_id, target_id, planned
-            ):
-                continue
-            if target.is_weapon and target.domain is TargetDomain.AIR:
-                if not self.engagement_state.interceptor_available(
-                    target_id, planned_interceptors.get(target_id, 0)
-                ):
-                    continue
-            distance = own.distance_to_km(target)
-            if distance <= strike_range:
-                immediate.append(target)
-            elif own.is_aircraft:
-                pursuit.append(target)
+            evaluation = self._evaluate_target(
+                own,
+                target,
+                planned_attackers,
+                planned_interceptors,
+            )
+            evaluated = (target, evaluation)
+            diagnostic.append(evaluated)
+            if evaluation.immediate_candidate:
+                immediate.append(evaluated)
+            elif evaluation.pursuit_candidate:
+                pursuit.append(evaluated)
 
-        key = lambda item: (own.distance_to_km(item), item.command_id)
+        key = lambda item: (item[1].distance_km, item[1].target_id)
         if immediate:
             return min(immediate, key=key)
         if pursuit:
@@ -323,6 +271,81 @@ class SymbolicReasoningEnv:
             # 弹药、并发或拦截数量中的哪一项拒绝。
             return min(diagnostic, key=key)
         return None
+
+    def _evaluate_target(
+        self,
+        own: EncodedEntity,
+        target: EncodedEntity,
+        planned_attackers: Mapping[str, Set[str]],
+        planned_interceptors: Mapping[str, int],
+    ) -> TargetEvaluation:
+        """一次性计算目标选择、预留和最终规则共同需要的约束。"""
+
+        target_id = target.command_id
+        distance_km = own.distance_to_km(target)
+        strike_range_km = own.strike_range_for(target)
+        weapon_count = own.weapon_count_for(target)
+        target_is_missile = (
+            target.is_weapon and target.domain is TargetDomain.AIR
+        )
+        heading_difference = self._heading_difference(own, target)
+        aimed = (
+            own.domain is TargetDomain.SURFACE
+            or heading_difference < self.aim_tolerance_deg
+        )
+        planned_for_target = planned_attackers.get(target_id, set())
+        active_attackers = self.engagement_state.active_attackers(target_id)
+        slot_available = self.engagement_state.slot_available(
+            own.command_id,
+            target_id,
+            planned_for_target,
+        )
+        already_attacking = self.engagement_state.is_attacking(
+            own.command_id,
+            target_id,
+        )
+        interceptors_launched = (
+            self.engagement_state.interceptors_launched(target_id)
+            + planned_interceptors.get(target_id, 0)
+        )
+        target_type_allowed = (
+            target.domain is not TargetDomain.UNKNOWN
+            and strike_range_km > 0.0
+        )
+        within_range = (
+            target_type_allowed and distance_km <= strike_range_km
+        )
+        safety_clearance = own.communication_ok and not own.radar_jammed
+
+        return TargetEvaluation(
+            target_id=target_id,
+            own_platform_type=own.domain,
+            target_domain=target.domain,
+            target_is_missile=target_is_missile,
+            attack_authorized=own.commandable,
+            safety_clearance=safety_clearance,
+            target_type_allowed=target_type_allowed,
+            weapon_available=weapon_count > 0,
+            compatible_weapon_count=weapon_count,
+            within_attack_range=within_range,
+            distance_km=distance_km,
+            max_attack_range_km=strike_range_km,
+            aimed_at_target=aimed,
+            heading_difference_deg=heading_difference,
+            chase_allowed=(
+                own.is_aircraft
+                and own.commandable
+                and safety_clearance
+                and target_type_allowed
+                and weapon_count > 0
+            ),
+            concurrency_slot_available=slot_available,
+            active_attackers_on_target=(
+                active_attackers + len(planned_for_target)
+            ),
+            already_attacking_target=already_attacking,
+            interceptors_launched=interceptors_launched,
+        )
 
     def _find_incoming_missile(
         self, own: EncodedEntity, targets: Sequence[EncodedEntity]
@@ -549,10 +572,8 @@ class SymbolicReasoningEnv:
         return time.time()
 
 
-def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
-    """通过项目统一日志输出逐实体推理路径、事实依据和执行状态。"""
-
-    logger.info(
+def print_step(result: SymbolicStepResult, step_index: int) -> None:
+    print(
         "step={} entities={} own={} targets={}".format(
             step_index,
             len(result.situation.entities),
@@ -565,7 +586,7 @@ def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
         entity = entities.get(entity_id)
         name = entity.name if entity is not None else entity_id
         status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
-        logger.info(
+        print(
             "  {} -> {} | execution={}\n{}".format(
                 name,
                 decision.conclusion.value,
@@ -601,7 +622,7 @@ def main_loop(
             execute_commands=execute_commands,
             logger=logger,
         )
-        log_step(result, step_index, logger)
+        print_step(result, step_index)
         step_index += 1
         if steps <= 0 or step_index < steps:
             time.sleep(max(0.0, interval))
@@ -635,8 +656,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    current_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    logger = Log(name=f"symbolic_reasoning_{current_time}", log_dir="logs")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    logger = logging.getLogger("symbolic_reasoning")
     env = SymbolicReasoningEnv(
         mission_areas=_load_mission_areas(args.mission_areas)
     )

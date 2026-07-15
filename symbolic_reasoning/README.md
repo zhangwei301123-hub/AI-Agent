@@ -15,7 +15,7 @@
 ## 文件
 
 - `entity.py`：读取 `data.data.UnitList`，编码字段、库存、任务、武器目标链路和删除反馈；
-- `agent.py`：匹配规则、输出结论和逐条推理路径，并生成 8×5 Actor 动作矩阵；
+- `agent.py`：统一 `TargetEvaluation` 攻击约束，匹配规则、输出推理路径并生成 8×5 Actor 动作矩阵；
 - `state.py`：维护并发攻击槽位、10 分钟超时和累计拦截弹数量；
 - `execute_actions.py`：校验动作并复用根目录 `execute.execute_actions`；
 - `symbolic_reasoning4test.py`：类似 `maddpg4test.py` 的运行入口，默认实际执行；
@@ -119,7 +119,13 @@ python -m symbolic_reasoning.acceptance
 - 21 个业务正确性与边界用例；
 - 15 个标准化布尔事实的 `2^15 = 32768` 种组合全覆盖；
 - 32768 条结论的规则编号、证据和推理路径检查；
-- 默认 10000 次推理的耗时和 Python 峰值分配内存测试。
+- 默认 10000 次核心推理的耗时和 Python 峰值分配内存测试；
+- 默认 10000 次“核心推理 + 完整 `Decision.explanation` 格式化”测试；
+- 默认 5 次 700 实体最坏端到端测试：350 个我方平台对 350 个目标，
+  每帧核验 122500 次目标评估、122500 次来袭候选扫描和 350 份完整解释。
 
-默认性能门槛为 P95 不超过 5 ms、峰值分配内存不超过 16 MiB，可通过
-`--max-p95-ms` 和 `--max-memory-mib` 调整。
+默认核心推理和完整解释的 P95 门槛均为 5 ms，峰值分配内存不超过
+16 MiB；700 实体最坏端到端 P95 门槛为 5000 ms、峰值分配内存不超过
+128 MiB。可通过 `--max-p95-ms`、`--max-explanation-p95-ms`、
+`--max-memory-mib`、`--worst-case-iterations`、
+`--max-worst-case-p95-ms` 和 `--max-worst-case-memory-mib` 调整。

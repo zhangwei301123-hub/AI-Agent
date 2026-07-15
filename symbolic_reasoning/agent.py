@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .entity import TargetDomain
+from .state import MAX_INTERCEPTORS_PER_MISSILE
 
 
 # 与根目录 execute.execute_actions 一致：8 个 Actor，每个 Actor 5 个参数。
@@ -38,6 +39,145 @@ class Conclusion(str, Enum):
     SEARCH = "SEARCH"
     HOLD = "HOLD"
     RETURN_TO_BASE = "RETURN_TO_BASE"
+
+
+@dataclass(frozen=True)
+class TargetEvaluation:
+    """对单个候选目标的统一攻击约束评估。
+
+    目标选择、同帧攻击名额预留和最终规则推理共同使用本对象，避免三处
+    分别维护射程、弹药、并发、拦截数量和朝向判断。
+    """
+
+    target_id: str
+    own_platform_type: TargetDomain
+    target_domain: TargetDomain
+    target_is_missile: bool
+    attack_authorized: bool
+    safety_clearance: bool
+    target_type_allowed: bool
+    weapon_available: bool
+    compatible_weapon_count: int
+    within_attack_range: bool
+    distance_km: float
+    max_attack_range_km: float
+    aimed_at_target: bool
+    heading_difference_deg: float
+    chase_allowed: bool
+    concurrency_slot_available: bool
+    active_attackers_on_target: int
+    already_attacking_target: bool
+    interceptors_launched: int
+
+    @classmethod
+    def from_facts(cls, facts: "ReasoningFacts") -> "TargetEvaluation":
+        if facts.target_id is None:
+            raise ValueError("没有目标时不能构造 TargetEvaluation")
+        return cls(
+            target_id=facts.target_id,
+            own_platform_type=facts.own_platform_type,
+            target_domain=facts.target_domain,
+            target_is_missile=facts.target_is_missile,
+            attack_authorized=facts.attack_authorized,
+            safety_clearance=facts.safety_clearance,
+            target_type_allowed=facts.target_type_allowed,
+            weapon_available=facts.weapon_available,
+            compatible_weapon_count=facts.compatible_weapon_count,
+            within_attack_range=facts.within_attack_range,
+            distance_km=facts.distance_km,
+            max_attack_range_km=facts.max_attack_range_km,
+            aimed_at_target=facts.aimed_at_target,
+            heading_difference_deg=facts.heading_difference_deg,
+            chase_allowed=facts.chase_allowed,
+            concurrency_slot_available=facts.concurrency_slot_available,
+            active_attackers_on_target=facts.active_attackers_on_target,
+            already_attacking_target=facts.already_attacking_target,
+            interceptors_launched=facts.interceptors_launched,
+        )
+
+    @property
+    def authorization_blocked(self) -> bool:
+        return not self.attack_authorized or not self.safety_clearance
+
+    @property
+    def concurrency_blocked(self) -> bool:
+        return (
+            not self.concurrency_slot_available
+            or self.already_attacking_target
+        )
+
+    @property
+    def interceptor_blocked(self) -> bool:
+        return (
+            self.target_is_missile
+            and self.interceptors_launched >= MAX_INTERCEPTORS_PER_MISSILE
+        )
+
+    @property
+    def range_capability_blocked(self) -> bool:
+        return (
+            not self.target_type_allowed
+            or self.max_attack_range_km <= 0.0
+        )
+
+    @property
+    def weapon_blocked(self) -> bool:
+        return (
+            not self.weapon_available
+            or self.compatible_weapon_count <= 0
+        )
+
+    @property
+    def aim_required(self) -> bool:
+        return self.own_platform_type is not TargetDomain.SURFACE
+
+    @property
+    def aim_ok(self) -> bool:
+        return not self.aim_required or self.aimed_at_target
+
+    @property
+    def candidate_eligible(self) -> bool:
+        """是否具备进入立即攻击/追击候选集的目标级条件。"""
+
+        return not (
+            self.range_capability_blocked
+            or self.weapon_blocked
+            or self.concurrency_blocked
+            or self.interceptor_blocked
+        )
+
+    @property
+    def immediate_candidate(self) -> bool:
+        return self.candidate_eligible and self.within_attack_range
+
+    @property
+    def pursuit_candidate(self) -> bool:
+        return (
+            self.candidate_eligible
+            and not self.within_attack_range
+            and self.own_platform_type is TargetDomain.AIR
+        )
+
+    @property
+    def can_chase(self) -> bool:
+        return (
+            self.own_platform_type is TargetDomain.AIR
+            and self.chase_allowed
+        )
+
+    @property
+    def attack_request_allowed(self) -> bool:
+        """所有 REQUEST_ATTACK 条件是否统一通过。"""
+
+        return (
+            not self.authorization_blocked
+            and not self.concurrency_blocked
+            and not self.interceptor_blocked
+            and not self.range_capability_blocked
+            and not self.weapon_blocked
+            and self.within_attack_range
+            and self.aim_ok
+        )
 
 
 @dataclass(frozen=True)
@@ -78,6 +218,7 @@ class ReasoningFacts:
     active_attackers_on_target: int = 0
     already_attacking_target: bool = False
     interceptors_launched: int = 0
+    target_evaluation: Optional[TargetEvaluation] = None
 
     target_lon: float = 0.0
     target_lat: float = 0.0
@@ -103,6 +244,13 @@ class ReasoningFacts:
             raise ValueError("own_platform_type 必须是 TargetDomain")
         if not isinstance(self.target_domain, TargetDomain):
             raise ValueError("target_domain 必须是 TargetDomain")
+        if self.target_evaluation is not None:
+            if not isinstance(self.target_evaluation, TargetEvaluation):
+                raise ValueError("target_evaluation 必须是 TargetEvaluation 或 None")
+            if self.target_evaluation.target_id != self.target_id:
+                raise ValueError("target_evaluation 与 target_id 不一致")
+            if self.target_evaluation != TargetEvaluation.from_facts(self):
+                raise ValueError("target_evaluation 与标准化事实不一致")
 
         bool_fields = (
             "target_is_missile",
@@ -299,10 +447,14 @@ class SymbolicReasoningAgent:
         )
 
         if has_target:
+            evaluation = (
+                facts.target_evaluation
+                or TargetEvaluation.from_facts(facts)
+            )
             if record(
                 "R-VAL-001",
                 "实体必须可操纵且通信安全状态允许攻击",
-                not facts.attack_authorized or not facts.safety_clearance,
+                evaluation.authorization_blocked,
                 (
                     "attack_authorized={}".format(facts.attack_authorized),
                     "safety_clearance={}".format(facts.safety_clearance),
@@ -315,14 +467,10 @@ class SymbolicReasoningAgent:
                     tuple(path),
                 )
 
-            concurrency_blocked = (
-                not facts.concurrency_slot_available
-                or facts.already_attacking_target
-            )
             if record(
                 "R-CON-001",
                 "同一目标最多允许 3 个不同攻击者占用或预留并发槽位",
-                concurrency_blocked,
+                evaluation.concurrency_blocked,
                 (
                     "active_attackers={}".format(
                         facts.active_attackers_on_target
@@ -343,19 +491,16 @@ class SymbolicReasoningAgent:
                 )
                 return self._hold("R-CON-001", reason, facts, tuple(path))
 
-            interceptor_blocked = (
-                facts.target_is_missile and facts.interceptors_launched >= 4
-            )
             if record(
                 "R-INT-001",
                 "一个导弹目标生命周期内累计最多发射 4 发拦截弹",
-                interceptor_blocked,
+                evaluation.interceptor_blocked,
                 (
                     "target_is_missile={}".format(facts.target_is_missile),
                     "interceptors_launched={}".format(
                         facts.interceptors_launched
                     ),
-                    "limit=4",
+                    "limit={}".format(MAX_INTERCEPTORS_PER_MISSILE),
                 ),
             ):
                 return self._hold(
@@ -368,7 +513,7 @@ class SymbolicReasoningAgent:
             if record(
                 "R-RNG-001",
                 "平台必须具备目标域对应的有效最大射程",
-                not facts.target_type_allowed or facts.max_attack_range_km <= 0.0,
+                evaluation.range_capability_blocked,
                 (
                     "target_domain={}".format(facts.target_domain.name),
                     "target_type_allowed={}".format(
@@ -389,7 +534,7 @@ class SymbolicReasoningAgent:
             if record(
                 self._weapon_rule_id(facts.target_domain),
                 "对应类型武器数量必须大于 0，具体武器由系统选择",
-                not facts.weapon_available or facts.compatible_weapon_count <= 0,
+                evaluation.weapon_blocked,
                 (
                     "expected_weapon_type={}".format(
                         facts.expected_weapon_type
@@ -407,11 +552,8 @@ class SymbolicReasoningAgent:
                     tuple(path),
                 )
 
-            if not facts.within_attack_range:
-                can_chase = (
-                    facts.own_platform_type is TargetDomain.AIR
-                    and facts.chase_allowed
-                )
+            if not evaluation.within_attack_range:
+                can_chase = evaluation.can_chase
                 record(
                     "R-RNG-004",
                     "超出射程时只有飞机允许追击，且不得立即发射",
@@ -457,8 +599,8 @@ class SymbolicReasoningAgent:
                     tuple(path),
                 )
 
-            aim_required = facts.own_platform_type is not TargetDomain.SURFACE
-            aim_ok = (not aim_required) or facts.aimed_at_target
+            aim_required = evaluation.aim_required
+            aim_ok = evaluation.aim_ok
             record(
                 "R-AIM-001" if not aim_required else "R-AIM-002",
                 "水面舰艇免除朝向限制；飞机和潜艇必须严格小于 30 度",
@@ -490,6 +632,9 @@ class SymbolicReasoningAgent:
                     facts,
                     tuple(path),
                 )
+
+            if not evaluation.attack_request_allowed:
+                raise RuntimeError("TargetEvaluation 与规则推理路径不一致")
 
             weapon_rule = self._weapon_rule_id(facts.target_domain)
             record(

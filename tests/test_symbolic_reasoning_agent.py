@@ -6,6 +6,7 @@ from symbolic_reasoning import (
     Conclusion,
     ReasoningFacts,
     SymbolicReasoningAgent,
+    TargetEvaluation,
     TargetDomain,
 )
 
@@ -65,8 +66,12 @@ class SymbolicReasoningAgentTests(unittest.TestCase):
         self.assertEqual(decision.actions[6][0], 0.01)
 
     def test_attack_when_all_business_constraints_pass(self):
-        decision = self.agent.reason(attack_facts())
+        facts = attack_facts()
+        evaluation = TargetEvaluation.from_facts(facts)
+        decision = self.agent.reason(facts)
 
+        self.assertTrue(evaluation.immediate_candidate)
+        self.assertTrue(evaluation.attack_request_allowed)
         self.assertEqual(decision.conclusion, Conclusion.REQUEST_ATTACK)
         self.assertEqual(decision.rule_id, "R-WPN-001")
         self.assertEqual(decision.actions[3][1:3], [4, 3])
@@ -143,6 +148,31 @@ class SymbolicReasoningAgentTests(unittest.TestCase):
         self.assertEqual(concurrency.conclusion, Conclusion.HOLD)
         self.assertEqual(interceptor.rule_id, "R-INT-001")
         self.assertEqual(interceptor.conclusion, Conclusion.HOLD)
+
+    def test_target_evaluation_centralizes_attack_blockers(self):
+        concurrency = TargetEvaluation.from_facts(
+            attack_facts(
+                concurrency_slot_available=False,
+                active_attackers_on_target=3,
+            )
+        )
+        interceptor = TargetEvaluation.from_facts(
+            attack_facts(target_is_missile=True, interceptors_launched=4)
+        )
+        out_of_range = TargetEvaluation.from_facts(
+            attack_facts(
+                within_attack_range=False,
+                distance_km=120.0,
+                max_attack_range_km=100.0,
+            )
+        )
+
+        self.assertTrue(concurrency.concurrency_blocked)
+        self.assertFalse(concurrency.candidate_eligible)
+        self.assertTrue(interceptor.interceptor_blocked)
+        self.assertFalse(interceptor.attack_request_allowed)
+        self.assertTrue(out_of_range.pursuit_candidate)
+        self.assertTrue(out_of_range.can_chase)
 
     def test_patrol_aircraft_can_deploy_buoy_on_500m_boundary(self):
         facts = ReasoningFacts(

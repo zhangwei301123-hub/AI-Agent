@@ -7,6 +7,7 @@ from .agent import (
     ReasoningFacts,
     RunResult,
     SymbolicReasoningAgent,
+    TargetEvaluation,
 )
 from .entity import (
     FEATURE_NAMES,
@@ -32,6 +33,7 @@ __all__ = [
     "ReasoningFacts",
     "RunResult",
     "SymbolicReasoningAgent",
+    "TargetEvaluation",
     "FEATURE_NAMES",
     "EncodedEntity",
     "EncodedSituation",
