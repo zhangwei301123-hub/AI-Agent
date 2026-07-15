@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import math
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+
+from log import Log
 
 from .agent import Conclusion, Decision, ReasoningFacts, SymbolicReasoningAgent
 from .entity import (
@@ -548,8 +549,10 @@ class SymbolicReasoningEnv:
         return time.time()
 
 
-def print_step(result: SymbolicStepResult, step_index: int) -> None:
-    print(
+def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
+    """通过项目统一日志输出逐实体推理路径、事实依据和执行状态。"""
+
+    logger.info(
         "step={} entities={} own={} targets={}".format(
             step_index,
             len(result.situation.entities),
@@ -562,7 +565,7 @@ def print_step(result: SymbolicStepResult, step_index: int) -> None:
         entity = entities.get(entity_id)
         name = entity.name if entity is not None else entity_id
         status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
-        print(
+        logger.info(
             "  {} -> {} | execution={}\n{}".format(
                 name,
                 decision.conclusion.value,
@@ -598,7 +601,7 @@ def main_loop(
             execute_commands=execute_commands,
             logger=logger,
         )
-        print_step(result, step_index)
+        log_step(result, step_index, logger)
         step_index += 1
         if steps <= 0 or step_index < steps:
             time.sleep(max(0.0, interval))
@@ -632,11 +635,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
-    logger = logging.getLogger("symbolic_reasoning")
+    current_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    logger = Log(name=f"symbolic_reasoning_{current_time}", log_dir="logs")
     env = SymbolicReasoningEnv(
         mission_areas=_load_mission_areas(args.mission_areas)
     )

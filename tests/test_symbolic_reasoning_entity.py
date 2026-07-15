@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from symbolic_reasoning import EntityEncoder, FEATURE_NAMES, TargetDomain, load_situation
-from symbolic_reasoning.symbolic_reasoning4test import SymbolicReasoningEnv
+from symbolic_reasoning.symbolic_reasoning4test import SymbolicReasoningEnv, log_step
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +62,28 @@ class EntityEncoderTests(unittest.TestCase):
 
 
 class SymbolicReasoningEnvironmentTests(unittest.TestCase):
+    def test_info_log_contains_complete_explanation(self):
+        class CapturingLogger:
+            def __init__(self):
+                self.messages = []
+
+            def info(self, message, *args):
+                self.messages.append(message % args if args else str(message))
+
+        payload = load_situation(SAMPLE)
+        result = SymbolicReasoningEnv(max_entities=64).step(
+            payload, execute_commands=False
+        )
+        logger = CapturingLogger()
+
+        log_step(result, step_index=0, logger=logger)
+
+        log_text = "\n".join(logger.messages)
+        self.assertIn("step=0", log_text)
+        self.assertIn("推理路径：", log_text)
+        self.assertIn("execution=DRY_RUN", log_text)
+        self.assertIn("决定规则", log_text)
+
     def test_sample_runs_through_encoding_and_reasoning(self):
         payload = load_situation(SAMPLE)
         result = SymbolicReasoningEnv(max_entities=64).step(

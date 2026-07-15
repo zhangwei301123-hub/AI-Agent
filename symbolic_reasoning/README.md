@@ -45,6 +45,19 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
 python -m symbolic_reasoning.symbolic_reasoning4test --steps 1 --dry-run
 ```
 
+## 查看可解释性推理路径
+
+无需额外参数。程序与 `maddpg4test.py` 一样使用项目的 `logger.info(...)`，
+每一步都会输出各实体的规则编号、匹配结果、事实依据、最终结论和执行状态。
+日志会同时显示在控制台，并保存在：
+
+```text
+logs/symbolic_reasoning_YYYYMMDD_HHMMSS.log
+```
+
+使用 `--dry-run` 时执行状态为 `DRY_RUN`；不使用该参数时默认实际执行，
+日志会记录实际执行状态以及相同的完整推理路径。
+
 ## 弹药字段
 
 算法读取运行态势中可选的 `weaponNumber`：
