@@ -52,7 +52,9 @@ service SimulationService {
   rpc getTimeCompression(google.protobuf.Empty) returns (TimeCompression);
   // 获取推演结束信号
   rpc getEndSignal(google.protobuf.Empty) returns (EndSignalw);// 如果结束了就返回true，如果没有结束就返回false
-  // 获取态势数据 
+  // 暂未确定
+  // 态势获取与战报获取方法
+  // 获取态势数据
   rpc getSituation(google.protobuf.Empty) returns (SituationDatas);
   // 获取使用/损耗战损报告  
   rpc getUseUpReportw(google.protobuf.Empty) returns (UseUpReports);

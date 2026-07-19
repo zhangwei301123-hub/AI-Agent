@@ -1,0 +1,108 @@
+{
+  "rpc_target": "10.2.0.106:50051",
+  "rpc_method": "getAttackReport",
+  "read_time": "2026-07-19T17:19:57.053672+08:00",
+  "response_type": "proto.AttackReports",
+  "response_bytes": 447,
+  "report_count": 23,
+  "attackReport": [
+    {
+      "launch_platform_id": "df6f8a60-6566-45b1-87d8-b34444d932db",
+      "attack_target_type": "SHIP",
+      "fire_time": 3354,
+      "weaponId": "rc49gy-0hnn3ttoktcli"
+    },
+    {
+      "launch_platform_id": "df6f8a60-6566-45b1-87d8-b34444d932db",
+      "attack_target_type": "SHIP",
+      "fire_time": 3355,
+      "weaponId": "rc49gy-0hnn3ttoktd9t"
+    },
+    {
+      "launch_platform_id": "df6f8a60-6566-45b1-87d8-b34444d932db",
+      "attack_target_type": "SHIP",
+      "fire_time": 3355,
+      "weaponId": "rc49gy-0hnn3ttoktct0"
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 3417
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 3423
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 3423
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 3424
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 3425
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 3426
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50722
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50745
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50745
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50746
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50747
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50747
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50748
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50748
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50749
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50750
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50750
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50751
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50751
+    },
+    {
+      "attack_target_type": "SHIP",
+      "fire_time": 50752
+    }
+  ]
+}

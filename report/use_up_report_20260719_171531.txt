@@ -1,0 +1,143 @@
+{
+  "rpc_target": "10.2.0.106:50051",
+  "rpc_method": "getUseUpReportw",
+  "read_time": "2026-07-19T17:15:31.400544+08:00",
+  "response_type": "proto.UseUpReports",
+  "response_bytes": 1281,
+  "report_count": 22,
+  "useUpReport": [
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50721
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722,
+      "damage_degree": 1.0
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    },
+    {
+      "forceSide": "РЖЗН",
+      "id": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "type": "SHIP",
+      "time": 50722
+    }
+  ]
+}

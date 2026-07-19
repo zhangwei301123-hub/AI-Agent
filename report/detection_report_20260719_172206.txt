@@ -1,0 +1,90 @@
+{
+  "rpc_target": "10.2.0.106:50051",
+  "rpc_method": "getDetectionReport",
+  "read_time": "2026-07-19T17:22:06.612971+08:00",
+  "response_type": "proto.DetectionReports",
+  "response_bytes": 815,
+  "report_count": 16,
+  "detectionReport": [
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "SHIP",
+      "detectStep": "2790"
+    },
+    {
+      "targetId": "df6f8a60-6566-45b1-87d8-b34444d932db",
+      "targetType": "SHIP",
+      "detectStep": "3337"
+    },
+    {
+      "targetId": "df6f8a60-6566-45b1-87d8-b34444d932db",
+      "targetType": "MISSILE",
+      "detectStep": "3344"
+    },
+    {
+      "targetId": "df6f8a60-6566-45b1-87d8-b34444d932db",
+      "targetType": "MISSILE",
+      "detectStep": "3345"
+    },
+    {
+      "targetId": "949da449-6778-4d7f-a1fe-c0fc61ad7a3c",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "949da449-6778-4d7f-a1fe-c0fc61ad7a3c",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "949da449-6778-4d7f-a1fe-c0fc61ad7a3c",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "949da449-6778-4d7f-a1fe-c0fc61ad7a3c",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "MISSILE",
+      "detectStep": "3354"
+    },
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "SHIP",
+      "detectStep": "3357"
+    },
+    {
+      "targetId": "eb223571-39eb-4f72-9ce1-af263e7f0319",
+      "targetType": "SHIP",
+      "detectStep": "5316"
+    },
+    {
+      "targetId": "0b7a65c3-9915-49fa-83bd-aef3094a2f47",
+      "targetType": "SHIP",
+      "detectStep": "6624"
+    },
+    {
+      "targetId": "949da449-6778-4d7f-a1fe-c0fc61ad7a3c",
+      "targetType": "SHIP",
+      "detectStep": "23892"
+    }
+  ]
+}
