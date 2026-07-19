@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import math
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+
+from log import Log
 
 from .agent import (
     Conclusion,
@@ -19,6 +19,7 @@ from .agent import (
     SymbolicReasoningAgent,
     TargetEvaluation,
 )
+from .control import FrontendControl
 from .entity import (
     EncodedEntity,
     EncodedSituation,
@@ -73,8 +74,9 @@ class SymbolicReasoningEnv:
         executor: Any = None,
     ) -> SymbolicStepResult:
         situation = self.encoder.encode(payload)
-        current_time = self._scenario_timestamp(situation.current_time)
-        self.engagement_state.update_from_situation(situation, current_time)
+        # 后台每返回一份态势就计为一帧；UI 倍速不参与规则计时。
+        current_frame = self.current_step
+        self.engagement_state.update_from_situation(situation, current_frame)
         facts = self.build_facts(situation)
 
         if execute_commands:
@@ -90,7 +92,7 @@ class SymbolicReasoningEnv:
             rewards = run_result.rewards
             execution_status = run_result.execution_status
             self._record_successful_attacks(
-                facts, decisions, execution_status, current_time
+                facts, decisions, execution_status, current_frame
             )
         else:
             decisions, actions_dict = self.agent.build_actions(facts.values())
@@ -414,7 +416,7 @@ class SymbolicReasoningEnv:
         facts: Mapping[str, ReasoningFacts],
         decisions: Mapping[str, Decision],
         execution_status: Mapping[str, str],
-        current_time: float,
+        current_frame: int,
     ) -> None:
         for entity_id, decision in decisions.items():
             if decision.conclusion is not Conclusion.REQUEST_ATTACK:
@@ -427,7 +429,7 @@ class SymbolicReasoningEnv:
             self.engagement_state.record_successful_attack(
                 attacker_id=entity_id,
                 target_id=entity_facts.target_id,
-                started_at=current_time,
+                started_frame=current_frame,
                 target_is_missile=entity_facts.target_is_missile,
                 target_aliases=(entity_facts.target_entity_id,),
             )
@@ -560,20 +562,10 @@ class SymbolicReasoningEnv:
             previous = current
         return inside
 
-    @staticmethod
-    def _scenario_timestamp(value: str) -> float:
-        if value:
-            text = value.strip()
-            try:
-                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-                return parsed.timestamp()
-            except (TypeError, ValueError):
-                pass
-        return time.time()
+def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
+    """通过统一 info 日志输出推理路径、事实依据和执行状态。"""
 
-
-def print_step(result: SymbolicStepResult, step_index: int) -> None:
-    print(
+    logger.info(
         "step={} entities={} own={} targets={}".format(
             step_index,
             len(result.situation.entities),
@@ -586,7 +578,7 @@ def print_step(result: SymbolicStepResult, step_index: int) -> None:
         entity = entities.get(entity_id)
         name = entity.name if entity is not None else entity_id
         status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
-        print(
+        logger.info(
             "  {} -> {} | execution={}\n{}".format(
                 name,
                 decision.conclusion.value,
@@ -613,16 +605,33 @@ def main_loop(
     interval: float,
     execute_commands: bool,
     logger: Any,
+    frontend_control: Optional[FrontendControl] = None,
 ) -> None:
     step_index = 0
     while steps <= 0 or step_index < steps:
+        if (
+            frontend_control is not None
+            and not frontend_control.wait_until_runnable()
+        ):
+            logger.info("[UI控制] 前端停止推演，符号推理循环退出")
+            break
+
         payload = load_situation(input_path)
+
+        # 文件读取期间可能收到暂停；执行前再次门控，避免在暂停后下发新命令。
+        if (
+            frontend_control is not None
+            and not frontend_control.wait_until_runnable()
+        ):
+            logger.info("[UI控制] 前端停止推演，符号推理循环退出")
+            break
+
         result = env.step(
             payload,
             execute_commands=execute_commands,
             logger=logger,
         )
-        print_step(result, step_index)
+        log_step(result, step_index, logger)
         step_index += 1
         if steps <= 0 or step_index < steps:
             time.sleep(max(0.0, interval))
@@ -648,22 +657,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=1,
         help="循环次数；0 或负数表示持续运行",
     )
-    parser.add_argument("--interval", type=float, default=1.0, help="循环间隔秒数")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=1.0,
+        help="请求下一帧前的现实时间间隔（秒），不参与规则帧计时",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="只编码和推理，不下发命令；默认会实际执行",
     )
+    parser.add_argument(
+        "--ignore-ui-control",
+        action="store_true",
+        help="离线运行时忽略前端开始、暂停和停止信号；默认启用前端控制",
+    )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
-    logger = logging.getLogger("symbolic_reasoning")
+    current_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    logger = Log(name=f"symbolic_reasoning_{current_time}", log_dir="logs")
     env = SymbolicReasoningEnv(
         mission_areas=_load_mission_areas(args.mission_areas)
     )
+    frontend_control = None
+    if not args.ignore_ui_control:
+        frontend_control = FrontendControl(logger=logger)
+        frontend_control.start()
+        logger.info("[UI控制] 已启动监听，等待前端运行信号")
     try:
         main_loop(
             env=env,
@@ -672,9 +693,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             interval=args.interval,
             execute_commands=not args.dry_run,
             logger=logger,
+            frontend_control=frontend_control,
         )
     except KeyboardInterrupt:
         logger.info("符号推理循环已停止")
+    finally:
+        if frontend_control is not None:
+            frontend_control.close()
     return 0
 
 

@@ -8,7 +8,7 @@
 - 只有飞机允许超距追击，进入射程后重新推理；
 - 飞机和潜艇需要严格小于 30°，水面舰艇免除朝向限制；
 - 攻击范围内最近合法目标优先；
-- 同一目标最多 3 个攻击者，命中或成功发射后 10 分钟释放；
+- 同一目标最多 3 个攻击者，命中或成功发射后 600 个后台数据帧释放；
 - 同一导弹目标生命周期内累计最多 4 发拦截弹；
 - 巡逻机在含边界的巡逻区内、距海面 0～500 m 时部署浮标。
 
@@ -16,7 +16,8 @@
 
 - `entity.py`：读取 `data.data.UnitList`，编码字段、库存、任务、武器目标链路和删除反馈；
 - `agent.py`：统一 `TargetEvaluation` 攻击约束，匹配规则、输出推理路径并生成 8×5 Actor 动作矩阵；
-- `state.py`：维护并发攻击槽位、10 分钟超时和累计拦截弹数量；
+- `state.py`：维护并发攻击槽位、600 帧超时和累计拦截弹数量；
+- `control.py`：监听前端开始、暂停和停止状态，并门控符号推理循环；
 - `execute_actions.py`：校验动作并复用根目录 `execute.execute_actions`；
 - `symbolic_reasoning4test.py`：类似 `maddpg4test.py` 的运行入口，默认实际执行；
 - `acceptance.py`：自动执行正确性、覆盖性、可解释性和性能测试。
@@ -35,6 +36,11 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
         → execute.execute_actions → 系统执行反馈
 ```
 
+时间口径：UI 的轮询间隔使用现实秒，`0～9` 表示 UI 的推演倍速；算法每成功
+取得一份后台态势数据计为 1 帧。规则冷却、并发槽位超时等只按数据帧累计，
+不乘 1x、5x、10x、Turbo 等时间压缩倍率。前端暂停期间不会取得下一帧，帧计数
+也不会增加。
+
 > 注意：符号推理动作矩阵会正确写入高度/速度等级，但当前根目录
 > `execute.py` 的航路和高度速度执行分支仍将两者固定为等级 4。若仿真系统必须
 > 实际采用等级 0/1/3/5，需要另行修改公共执行层；本目录未擅自改变神经算法共用接口。
@@ -44,6 +50,23 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
 ```powershell
 python -m symbolic_reasoning.symbolic_reasoning4test --steps 1 --dry-run
 ```
+
+## 跟随前端自动暂停
+
+默认启动前端状态监听。程序每个现实秒通过根目录 `execute.get_control_signal()` 查询
+推演状态：收到 `pause` 后停止进入下一轮推理和命令下发，收到 `start` 或
+`running` 后自动恢复，收到 `stop` 后退出循环。暂停时间不计入 `--steps`。
+
+如果只在没有前端/仿真服务的环境中离线检查文件，可以显式关闭 UI 控制：
+
+```powershell
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --steps 1 `
+  --dry-run `
+  --ignore-ui-control
+```
+
+控制信号读取失败时默认保持暂停，防止在无法确认前端状态时继续下发命令。
 
 ## 查看可解释性推理路径
 

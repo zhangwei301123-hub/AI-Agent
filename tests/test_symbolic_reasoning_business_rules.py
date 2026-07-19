@@ -368,14 +368,14 @@ class EngagementStateTests(unittest.TestCase):
         self.assertEqual(state.interceptors_launched(target_id), 3)
         self.assertFalse(state.slot_available("attacker-4", target_id))
 
-        # 目标仍在态势中；满 10 分钟只释放并发槽位，不清空累计发射数。
+        # 目标仍在态势中；满 600 帧只释放并发槽位，不清空累计发射数。
         state.update_from_situation(
-            self._Situation((self._Target(target_id),)), 600.0
+            self._Situation((self._Target(target_id),)), 600
         )
         self.assertEqual(state.active_attackers(target_id), 0)
         self.assertEqual(state.interceptors_launched(target_id), 3)
 
-        state.record_successful_attack("attacker-4", target_id, 600.0, True)
+        state.record_successful_attack("attacker-4", target_id, 600, True)
         self.assertEqual(state.interceptors_launched(target_id), 4)
         self.assertFalse(state.interceptor_available(target_id))
 

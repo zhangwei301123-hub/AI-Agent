@@ -22,9 +22,14 @@ class TargetDomain(IntEnum):
     UNKNOWN = 4
 
 
+OWN_SIDE_NAME = "红方"
+ENEMY_SIDE_NAME = "蓝方"
+
+
 # 字段来自 source/态势数据字段说明.md；可选库存/任务字段兼容现有运行数据。
 FEATURE_NAMES: Tuple[str, ...] = (
     "is_own",
+    "is_enemy",
     "is_contact",
     "is_weapon",
     "unit_type",
@@ -70,6 +75,29 @@ def _integer(value: Any, default: int = -1) -> int:
     return int(number) if number != float(default) else default
 
 
+def _boolean(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("false", "0", "no", "off", "否"):
+            return False
+        if normalized in ("true", "1", "yes", "on", "是"):
+            return True
+    return bool(value)
+
+
+def _canonical_side_name(unit: Mapping[str, Any]) -> str:
+    for key in ("forceSide", "side", "SideName", "sideName"):
+        value = str(unit.get(key) or "").strip()
+        normalized = value.lower().replace(" ", "")
+        if value == OWN_SIDE_NAME or normalized in ("red", "redside"):
+            return OWN_SIDE_NAME
+        if value == ENEMY_SIDE_NAME or normalized in ("blue", "blueside"):
+            return ENEMY_SIDE_NAME
+    return ""
+
+
 def _first_number(mapping: Mapping[str, Any], names: Sequence[str]) -> int:
     for name in names:
         if name in mapping:
@@ -86,7 +114,9 @@ class EncodedEntity:
     name: str
     unit_name: str
     side_id: str
+    side_name: str
     is_own: bool
+    is_enemy: bool
     is_contact: bool
     is_weapon: bool
     unit_type: int
@@ -202,7 +232,7 @@ class EncodedSituation:
             entity
             for entity in self.entities
             # 接触目标的 BloodAmount 可能因通信不足为 0，不能据此丢弃。
-            if not entity.is_own and (entity.is_contact or entity.health_pct != 0)
+            if entity.is_enemy and (entity.is_contact or entity.health_pct != 0)
         )
 
     def find_entity(self, entity_id: str) -> Optional[EncodedEntity]:
@@ -227,7 +257,10 @@ class EntityEncoder:
         if not isinstance(units, list):
             raise ValueError("态势数据缺少 data.data.UnitList 列表")
 
-        if not own_side_id:
+        red_side_id = self._find_side_id(units, OWN_SIDE_NAME)
+        if red_side_id:
+            own_side_id = red_side_id
+        elif not own_side_id:
             own_side_id = self._infer_own_side_id(units)
         if not own_side_id:
             raise ValueError("态势数据缺少 sideGuid，且无法从己方实体推断")
@@ -287,6 +320,17 @@ class EntityEncoder:
         raise ValueError("不支持的态势结构，期望完整响应 data.data.UnitList 或 SendMsg")
 
     @staticmethod
+    def _find_side_id(
+        units: Sequence[Mapping[str, Any]], side_name: str
+    ) -> str:
+        for unit in units:
+            if _canonical_side_name(unit) != side_name:
+                continue
+            side_id = unit.get("SideId") or unit.get("sideId")
+            return str(side_id) if side_id else side_name
+        return ""
+
+    @staticmethod
     def _infer_own_side_id(units: Sequence[Mapping[str, Any]]) -> str:
         for unit in units:
             if bool(unit.get("IsContact")):
@@ -302,16 +346,24 @@ class EntityEncoder:
         own_side_id: str,
         target_links: Mapping[str, str],
     ) -> EncodedEntity:
-        entity_id = str(unit.get("guid") or "").strip()
+        entity_id = str(unit.get("guid") or unit.get("mdlID") or "").strip()
         if not entity_id:
-            raise ValueError("UnitInfo 缺少必填字段 guid")
+            raise ValueError("UnitInfo 缺少必填字段 guid/mdlID")
 
         contact_value = unit.get("contactGuid")
         contact_id = str(contact_value).strip() if contact_value else None
-        side_id = str(unit.get("SideId") or unit.get("sideId") or "")
-        is_contact = bool(unit.get("IsContact"))
-        is_own = side_id == own_side_id and not is_contact
-        is_weapon = bool(unit.get("IsWeapon"))
+        side_name = _canonical_side_name(unit)
+        side_id = str(
+            unit.get("SideId") or unit.get("sideId") or side_name or ""
+        )
+        is_contact = _boolean(unit.get("IsContact"))
+        if side_name:
+            is_own = side_name == OWN_SIDE_NAME and not is_contact
+            is_enemy = side_name == ENEMY_SIDE_NAME
+        else:
+            is_own = side_id == own_side_id and not is_contact
+            is_enemy = not is_own
+        is_weapon = _boolean(unit.get("IsWeapon"))
         unit_type = _integer(unit.get("unitType"))
         unit_category = _integer(unit.get("unitCategory"))
         unit_specific_type = _integer(unit.get("UnitSpecificType"))
@@ -378,7 +430,12 @@ class EntityEncoder:
         jam_text = str(unit.get("JammText") or "")
         communication_ok = "通信中断" not in comm_text
         radar_jammed = "被干扰" in jam_text
-        commandable = is_own and not is_weapon and health_pct > 0.0
+        is_can_managed = _boolean(
+            unit.get("isCanManaged", unit.get("IsCanManaged")), default=True
+        )
+        commandable = (
+            is_own and is_can_managed and not is_weapon and health_pct > 0.0
+        )
         weapon_impact = max(0, _integer(unit.get("WeaponImpact"), 0))
         weapon_target_distance_km = max(
             0.0, _number(unit.get("WeaponTargetDistance"), 0.0)
@@ -387,6 +444,7 @@ class EntityEncoder:
         vector = np.asarray(
             [
                 float(is_own),
+                float(is_enemy),
                 float(is_contact),
                 float(is_weapon),
                 float(unit_type),
@@ -426,7 +484,9 @@ class EntityEncoder:
             name=str(unit.get("name") or unit.get("unitname") or entity_id),
             unit_name=str(unit.get("unitname") or ""),
             side_id=side_id,
+            side_name=side_name,
             is_own=is_own,
+            is_enemy=is_enemy,
             is_contact=is_contact,
             is_weapon=is_weapon,
             unit_type=unit_type,

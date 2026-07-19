@@ -43,22 +43,15 @@ service SimulationService {
   // 手动武器分配攻击（指定武器和数量攻击目标）
   rpc AttackTarget(AttackTargetRequest) returns (EmptyResponse);
 
-
-
-  // ==================== RL仿真控制类接口  ====================
-  // 仿真控制类方法
-  // 加载想定
-  rpc loadScenario(ScenarioFileRequest) returns (ResponseData);
+  // =================================== WHU 需要的protocol ======================================
   // 开始推演
   rpc startDedicew(IdRequestw) returns (ResponseDataw);
   // 暂停推演
   rpc pauseDedicew(google.protobuf.Empty) returns (ResponseDataw);
-  // 设置时间压缩（倍速）
-  rpc setTimeCompression(TimeCompressionRequest) returns (ResponseData);
   // 获取时间压缩（倍速）
   rpc getTimeCompression(google.protobuf.Empty) returns (TimeCompression);
   // 获取推演结束信号
-  rpc getEndSignal(google.protobuf.Empty) returns (EndSignalw);
+  rpc getEndSignal(google.protobuf.Empty) returns (EndSignalw);// 如果结束了就返回true，如果没有结束就返回false
 
   // 态势获取与战报获取方法
   // 获取态势数据
@@ -74,7 +67,7 @@ service SimulationService {
   // 获取任务列表
   rpc getMissionList(google.protobuf.Empty) returns (MissionList);
 
-  // 智能体动作执行与指控接口方法
+  // 智能体动作执行与指控接口的8类方法（9个）
   // 飞机单机起飞
   rpc aircraftTakeOffSinglew(IdRequestw) returns (ResponseDataw);
   // 飞机返航至基地
@@ -86,7 +79,7 @@ service SimulationService {
   // 打击目标
   rpc attackContactw(AttackRequestw) returns (ResponseDataw);
   // 纯方位攻击
-  rpc attackOrientationw(AttackOrientationw) returns (ResponseDataw);
+  rpc attackOrientationw(AttackOrientationw) returns (ResponseDataw); 
   // 传感器控制
   rpc controlUnitSensorw(SensorControlRequestw) returns (ResponseDataw);
   // 部署声纳浮标
@@ -223,8 +216,13 @@ enum EnumTimeCompression {
     OneSec = 0;//1秒
     TwoSec = 1;//2秒
     FiveSec = 2;//5秒
-    FifteenSec = 3;//15秒
-    Turbo = 4;//急速
+    TenSec = 3;//10秒
+    FifteenSec = 4;//15秒
+    ThirtySec = 5;//30秒
+    FortySec = 6;//40秒
+    FiftySec = 7;//50秒
+    SixtySec = 8;//60秒
+    Turbo = 9;//急速
 }
 
 //设置加速比请求
@@ -234,7 +232,7 @@ message TimeCompressionRequest {
 
 //获取加速比返回
 message TimeCompression {
-    int32 timeCompression = 1;//加速信息0:1倍、1:2倍、2:5倍、3:15倍
+    int32 timeCompression = 1;//0:1、1:2、2:5、3:10、4:15、5:30、6:40、7:50、8:60、9:Turbo
 }
 
 //推演结束信号
