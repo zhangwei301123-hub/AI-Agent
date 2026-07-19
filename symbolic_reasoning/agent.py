@@ -15,6 +15,7 @@ from .state import MAX_INTERCEPTORS_PER_MISSILE
 ACTOR_COUNT = 8
 ACTION_THRESHOLD = 0.9
 ACTION_DISABLED = 0.01
+DEFAULT_ATTACK_QUANTITY = 2
 
 RETURN_TO_BASE_ACTOR = 1
 WAYPOINT_ACTOR = 2
@@ -36,6 +37,7 @@ class Conclusion(str, Enum):
     CHASE = "CHASE_TO_RANGE"
     CHASE_AND_ALIGN = "CHASE_AND_ALIGN"
     DEPLOY_SONOBUOY = "DEPLOY_SONOBUOY"
+    PATROL = "PATROL"
     SEARCH = "SEARCH"
     HOLD = "HOLD"
     RETURN_TO_BASE = "RETURN_TO_BASE"
@@ -218,6 +220,7 @@ class ReasoningFacts:
     active_attackers_on_target: int = 0
     already_attacking_target: bool = False
     interceptors_launched: int = 0
+    attack_quantity: int = DEFAULT_ATTACK_QUANTITY
     target_evaluation: Optional[TargetEvaluation] = None
 
     target_lon: float = 0.0
@@ -228,6 +231,10 @@ class ReasoningFacts:
     is_patrol_aircraft: bool = False
     has_patrol_mission: bool = False
     inside_patrol_area: bool = False
+    mission_id: str = ""
+    patrol_route_lons: Tuple[float, ...] = ()
+    patrol_route_lats: Tuple[float, ...] = ()
+    patrol_altitude_level: int = 1
     altitude_above_sea_m: float = -1.0
     sonobuoy_count: int = 0
 
@@ -277,6 +284,7 @@ class ReasoningFacts:
             "compatible_weapon_count",
             "active_attackers_on_target",
             "interceptors_launched",
+            "attack_quantity",
             "sonobuoy_count",
         )
         for field_name in count_fields:
@@ -305,8 +313,21 @@ class ReasoningFacts:
 
         if not 0 <= self.attack_altitude_level <= 5:
             raise ValueError("attack_altitude_level 必须位于 [0, 5]")
+        if not 0 <= self.patrol_altitude_level <= 5:
+            raise ValueError("patrol_altitude_level 必须位于 [0, 5]")
         if not 0 <= self.waypoint_velocity_level <= 4:
             raise ValueError("waypoint_velocity_level 必须位于 [0, 4]")
+        if not isinstance(self.mission_id, str):
+            raise ValueError("mission_id 必须是字符串")
+        if len(self.patrol_route_lons) != len(self.patrol_route_lats):
+            raise ValueError("巡逻航路经纬度数量必须一致")
+        if self.patrol_route_lons and len(self.patrol_route_lons) < 3:
+            raise ValueError("巡逻航路至少需要 3 个坐标点")
+        for value in self.patrol_route_lons + self.patrol_route_lats:
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError("巡逻航路坐标必须是数值")
+            if not math.isfinite(float(value)):
+                raise ValueError("巡逻航路坐标必须是有限数值")
 
 
 @dataclass(frozen=True)
@@ -533,7 +554,7 @@ class SymbolicReasoningAgent:
 
             if record(
                 self._weapon_rule_id(facts.target_domain),
-                "对应类型武器数量必须大于 0，具体武器由系统选择",
+                "对应类型武器数量必须大于 0，执行时查询并选择合适武器",
                 evaluation.weapon_blocked,
                 (
                     "expected_weapon_type={}".format(
@@ -542,7 +563,7 @@ class SymbolicReasoningAgent:
                     "compatible_weapon_count={}".format(
                         facts.compatible_weapon_count
                     ),
-                    "weapon_selection=SYSTEM",
+                    "weapon_selection=GetWeaponFiringInfo",
                 ),
             ):
                 return self._hold(
@@ -652,17 +673,19 @@ class SymbolicReasoningAgent:
                     "compatible_weapon_count={}".format(
                         facts.compatible_weapon_count
                     ),
+                    "attack_quantity={}".format(facts.attack_quantity),
                 ),
             )
             return self._decision(
                 Conclusion.REQUEST_ATTACK,
                 weapon_rule,
-                "所有攻击约束通过，具体武器由系统自动选择",
+                "所有攻击约束通过，查询可用武器后调用 AttackTarget",
                 (
                     "within_attack_range=True",
                     "aimed_at_target=True_or_surface_ship_exempt",
                     "concurrency_slot_available=True",
                     "weapon_available=True",
+                    "attack_quantity={}".format(facts.attack_quantity),
                 ),
                 facts,
                 tuple(path),
@@ -698,6 +721,40 @@ class SymbolicReasoningAgent:
                     "inside_patrol_area=True",
                     "0<=altitude_above_sea_m<=500",
                     "sonobuoy_count>0",
+                ),
+                facts,
+                tuple(path),
+            )
+
+        patrol_allowed = (
+            facts.is_patrol_aircraft
+            and facts.has_patrol_mission
+            and len(facts.patrol_route_lons) >= 3
+            and len(facts.patrol_route_lons) == len(facts.patrol_route_lats)
+        )
+        if record(
+            "R-PATROL-001",
+            "巡逻飞机按照 getMissionList 返回的任务区域执行多点巡逻航路",
+            patrol_allowed,
+            (
+                "mission_id={}".format(facts.mission_id),
+                "is_patrol_aircraft={}".format(facts.is_patrol_aircraft),
+                "has_patrol_mission={}".format(facts.has_patrol_mission),
+                "inside_patrol_area={}".format(facts.inside_patrol_area),
+                "patrol_waypoint_count={}".format(
+                    len(facts.patrol_route_lons)
+                ),
+            ),
+        ):
+            return self._decision(
+                Conclusion.PATROL,
+                "R-PATROL-001",
+                "使用任务区域生成巡逻坐标并开启传感器",
+                (
+                    "mission_id={}".format(facts.mission_id),
+                    "patrol_waypoint_count={}".format(
+                        len(facts.patrol_route_lons)
+                    ),
                 ),
                 facts,
                 tuple(path),
@@ -805,6 +862,8 @@ class SymbolicReasoningAgent:
             return WAYPOINT_ACTOR
         if conclusion is Conclusion.DEPLOY_SONOBUOY:
             return SONOBUOY_ACTOR
+        if conclusion is Conclusion.PATROL:
+            return WAYPOINT_ACTOR
         if conclusion is Conclusion.SEARCH:
             return SENSOR_ACTOR
         if conclusion is Conclusion.RETURN_TO_BASE:
@@ -870,7 +929,7 @@ class SymbolicReasoningAgent:
                 4,
             ]
         elif conclusion is Conclusion.REQUEST_ATTACK:
-            # 支持动作：先给出攻击高度层，再提交是否发射；武器由系统选择。
+            # 支持动作：给出攻击高度层和数量；执行层查询具体武器后发射。
             actions[MOBILITY_ACTOR] = [
                 ACTION_THRESHOLD,
                 4,
@@ -883,7 +942,7 @@ class SymbolicReasoningAgent:
                 facts.target_id,
                 facts.target_lon,
                 facts.target_lat,
-                None,
+                facts.attack_quantity,
             ]
         elif conclusion in (
             Conclusion.CHASE_TO_RANGE,
@@ -902,6 +961,23 @@ class SymbolicReasoningAgent:
                 1.0,
                 1.0,
                 None,
+                None,
+            ]
+        elif conclusion is Conclusion.PATROL:
+            point_count = len(facts.patrol_route_lons)
+            actions[WAYPOINT_ACTOR] = [
+                ACTION_THRESHOLD,
+                list(facts.patrol_route_lons),
+                list(facts.patrol_route_lats),
+                [facts.patrol_altitude_level] * point_count,
+                [facts.waypoint_velocity_level] * point_count,
+            ]
+            # 巡逻航路执行时同时打开雷达和声呐搜索。
+            actions[SENSOR_ACTOR] = [
+                ACTION_THRESHOLD,
+                1.0,
+                1.0,
+                0.0,
                 None,
             ]
         elif conclusion is Conclusion.SEARCH:

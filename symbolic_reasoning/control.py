@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Callable, Optional
 
@@ -24,8 +25,26 @@ TIME_COMPRESSION_LABELS = {
 
 
 def _load_project_signal_provider() -> ControlSignalProvider:
-    # 根目录 execute.py 会初始化 gRPC，因此仅在启动监听线程时延迟导入。
-    from execute import get_control_signal
+    """构造只使用本包 protobuf 的 UI 状态读取器。"""
+
+    import grpc
+
+    from . import engine_pb2, engine_pb2_grpc
+
+    endpoint = os.environ.get(
+        "SYMBOLIC_REASONING_RPC_TARGET", "10.2.0.106:50051"
+    )
+    channel = grpc.insecure_channel(endpoint)
+    stub = engine_pb2_grpc.SimulationServiceStub(channel)
+
+    def get_control_signal() -> str:
+        status = stub.GetEngineStatus(engine_pb2.EmptyRequest(), timeout=5.0)
+        return {
+            1: "pause",
+            2: "running",
+            3: "pause",
+            4: "stop",
+        }.get(int(status.run_status), "pause")
 
     return get_control_signal
 
@@ -34,6 +53,9 @@ class FrontendControl:
     """轮询前端控制信号，并用 Event 控制符号推理是否继续运行。"""
 
     RUN_SIGNALS = frozenset(("start", "running", "restart", "resume"))
+    # Windows 上无限期 Event.wait() 可能推迟主线程处理 Ctrl+C，直到 UI
+    # 状态变化后才被唤醒。短周期超时让 Python 最迟约 0.1 秒处理一次中断。
+    INTERRUPT_POLL_SECONDS = 0.1
 
     def __init__(
         self,
@@ -78,7 +100,7 @@ class FrontendControl:
         self._thread.start()
 
     def handle_signal(self, signal: Optional[str]) -> None:
-        """处理 execute.get_control_signal() 返回的控制状态。"""
+        """处理前端状态 RPC 返回的标准化控制状态。"""
 
         normalized = str(signal or "").strip().lower()
         if normalized in self.RUN_SIGNALS:
@@ -108,8 +130,14 @@ class FrontendControl:
     def wait_until_runnable(self) -> bool:
         """阻塞到前端运行或停止；返回 False 表示主循环应退出。"""
 
-        self.control_event.wait()
-        return not self.should_exit and self.state == "running"
+        while True:
+            if self.should_exit or self._listener_stop.is_set():
+                return False
+            if self.state == "running":
+                return True
+            # 必须使用有界等待；这样主线程即使处于 UI 暂停状态，也能及时
+            # 接收 KeyboardInterrupt，而不依赖下一次前端状态变化来唤醒。
+            self.control_event.wait(timeout=self.INTERRUPT_POLL_SECONDS)
 
     def close(self, timeout: float = 2.0) -> None:
         self._listener_stop.set()

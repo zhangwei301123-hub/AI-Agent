@@ -44,47 +44,45 @@ service SimulationService {
   rpc AttackTarget(AttackTargetRequest) returns (EmptyResponse);
 
   // =================================== WHU 需要的protocol ======================================
-  // 开始推演
+  // 开始推演 ✓
   rpc startDedicew(IdRequestw) returns (ResponseDataw);
-  // 暂停推演
+  // 暂停推演 ✓
   rpc pauseDedicew(google.protobuf.Empty) returns (ResponseDataw);
-  // 获取时间压缩（倍速）
+  // 获取时间压缩（倍速） ✓
   rpc getTimeCompression(google.protobuf.Empty) returns (TimeCompression);
   // 获取推演结束信号
   rpc getEndSignal(google.protobuf.Empty) returns (EndSignalw);// 如果结束了就返回true，如果没有结束就返回false
-
-  // 态势获取与战报获取方法
-  // 获取态势数据
+  // 获取态势数据 
   rpc getSituation(google.protobuf.Empty) returns (SituationDatas);
-  // 获取使用/损耗战损报告
+  // 获取使用/损耗战损报告  
   rpc getUseUpReportw(google.protobuf.Empty) returns (UseUpReports);
-  // 获取攻击/战损报告
+  // 获取攻击/战损报告 
   rpc getAttackReport(google.protobuf.Empty) returns (AttackReports);
   // 获取侦察/探测报告
   rpc getDetectionReport(google.protobuf.Empty) returns (DetectionReports);
-  // 获取作参考点/参考区域
+  // 获取作参考点/参考区域   
   rpc getCombatArea(google.protobuf.Empty) returns (AreaPointList);
-  // 获取任务列表
+  // 获取任务列表   需要巡逻的区域，类似A, B, C, D 四个点围起来的区域  {missionId: {"area_points": [(lon, lat), ...]}}
   rpc getMissionList(google.protobuf.Empty) returns (MissionList);
 
   // 智能体动作执行与指控接口的8类方法（9个）
-  // 飞机单机起飞
+  // 飞机单机起飞 
   rpc aircraftTakeOffSinglew(IdRequestw) returns (ResponseDataw);
-  // 飞机返航至基地
+  // 飞机返航至基地  
   rpc aircraftReturnToBasew(IdRequestw) returns (ResponseDataw);
-  // 设置实体机动航路
+  // 设置实体机动航路  
   rpc setUnitRoutew(UnitRoutew) returns (ResponseDataw);
-  // 设置实体机动海拔高度和速度
+  // 设置实体机动海拔高度和速度  
   rpc adjustUnitAltitudeAndSpeed(UnitAltitudeAndSpeedw) returns (ResponseDataw);
-  // 打击目标
+  // 打击目标 
   rpc attackContactw(AttackRequestw) returns (ResponseDataw);
-  // 纯方位攻击
-  rpc attackOrientationw(AttackOrientationw) returns (ResponseDataw); 
-  // 传感器控制
+  // 纯方位攻击  
+  rpc attackOrientationw(AttackOrientationw) returns (ResponseDataw);
+  // 传感器控制  
   rpc controlUnitSensorw(SensorControlRequestw) returns (ResponseDataw);
-  // 部署声纳浮标
+  // 部署声纳浮标  
   rpc delpoySonobuoyw(SonobuoyDelpoyRequestw) returns (ResponseDataw);
-  // 放弃打击
+  // 放弃打击  
   rpc cancelAttackw(IdRequestw) returns (ResponseDataw);
 }
 

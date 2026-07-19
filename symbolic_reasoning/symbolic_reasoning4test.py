@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from log import Log
 
@@ -27,10 +28,18 @@ from .entity import (
     TargetDomain,
     load_situation,
 )
+from .mission import load_project_mission_areas
+from .live import RpcSituationSource
 from .state import EngagementState
+from .execute_actions import (
+    DEFAULT_ATTACK_QUANTITY,
+    DEFAULT_ATTACK_RPC_TARGET,
+    execute_actions,
+)
 
 
 MISSILE_EVADE_DISTANCE_KM = 5.0
+MISSILE_INTERCEPT_PRIORITY_DISTANCE_KM = 50.0
 MISSILE_POINTING_TOLERANCE_DEG = 30.0
 EVADE_ROUTE_LENGTH_KM = 5.0
 AIM_TOLERANCE_DEG = 30.0
@@ -47,6 +56,16 @@ class SymbolicStepResult:
     execution_status: Optional[Dict[str, str]] = None
 
 
+@dataclass(frozen=True)
+class PatrolContext:
+    is_patrol_aircraft: bool
+    has_patrol_mission: bool
+    inside_patrol_area: bool
+    route_lons: Tuple[float, ...] = ()
+    route_lats: Tuple[float, ...] = ()
+    altitude_level: int = 1
+
+
 class SymbolicReasoningEnv:
     """完成“编码 → 校验 → 规则匹配 → 推理 → 默认实际执行”。"""
 
@@ -54,14 +73,22 @@ class SymbolicReasoningEnv:
         self,
         max_entities: int = 700,
         aim_tolerance_deg: float = AIM_TOLERANCE_DEG,
+        missile_intercept_distance_km: float = (
+            MISSILE_INTERCEPT_PRIORITY_DISTANCE_KM
+        ),
         mission_areas: Optional[Mapping[str, Any]] = None,
         engagement_state: Optional[EngagementState] = None,
     ) -> None:
         if not 0.0 < aim_tolerance_deg <= 180.0:
             raise ValueError("aim_tolerance_deg 必须位于 (0, 180]")
+        if missile_intercept_distance_km <= 0.0:
+            raise ValueError("missile_intercept_distance_km 必须大于 0")
         self.encoder = EntityEncoder(max_entities=max_entities)
         self.agent = SymbolicReasoningAgent()
         self.aim_tolerance_deg = float(aim_tolerance_deg)
+        self.missile_intercept_distance_km = float(
+            missile_intercept_distance_km
+        )
         self.mission_areas = dict(mission_areas or {})
         self.engagement_state = engagement_state or EngagementState()
         self.current_step = 0
@@ -125,7 +152,7 @@ class SymbolicReasoningEnv:
 
         for own in sorted(situation.own_entities, key=lambda item: item.command_id):
             incoming = self._find_incoming_missile(own, targets)
-            patrol_facts = self._patrol_facts(own)
+            patrol = self._patrol_context(own)
             if incoming is not None:
                 evade_lon, evade_lat = self._destination_point(
                     own.longitude,
@@ -147,9 +174,14 @@ class SymbolicReasoningEnv:
                     safety_clearance=(
                         own.communication_ok and not own.radar_jammed
                     ),
-                    is_patrol_aircraft=patrol_facts[0],
-                    has_patrol_mission=patrol_facts[1],
-                    inside_patrol_area=patrol_facts[2],
+                    is_patrol_aircraft=patrol.is_patrol_aircraft,
+                    has_patrol_mission=patrol.has_patrol_mission,
+                    inside_patrol_area=patrol.inside_patrol_area,
+                    mission_id=own.mission_id,
+                    patrol_route_lons=patrol.route_lons,
+                    patrol_route_lats=patrol.route_lats,
+                    patrol_altitude_level=patrol.altitude_level,
+                    waypoint_velocity_level=3,
                     altitude_above_sea_m=own.altitude_m,
                     sonobuoy_count=own.sonobuoy_count,
                 )
@@ -170,9 +202,14 @@ class SymbolicReasoningEnv:
                     safety_clearance=(
                         own.communication_ok and not own.radar_jammed
                     ),
-                    is_patrol_aircraft=patrol_facts[0],
-                    has_patrol_mission=patrol_facts[1],
-                    inside_patrol_area=patrol_facts[2],
+                    is_patrol_aircraft=patrol.is_patrol_aircraft,
+                    has_patrol_mission=patrol.has_patrol_mission,
+                    inside_patrol_area=patrol.inside_patrol_area,
+                    mission_id=own.mission_id,
+                    patrol_route_lons=patrol.route_lons,
+                    patrol_route_lats=patrol.route_lats,
+                    patrol_altitude_level=patrol.altitude_level,
+                    waypoint_velocity_level=3,
                     altitude_above_sea_m=own.altitude_m,
                     sonobuoy_count=own.sonobuoy_count,
                 )
@@ -181,6 +218,12 @@ class SymbolicReasoningEnv:
             target, evaluation = selected
             target_id = evaluation.target_id
             planned_for_target = planned_attackers.setdefault(target_id, set())
+            attack_quantity = DEFAULT_ATTACK_QUANTITY
+            if evaluation.target_is_missile:
+                attack_quantity = min(
+                    DEFAULT_ATTACK_QUANTITY,
+                    max(1, 4 - evaluation.interceptors_launched),
+                )
 
             facts = ReasoningFacts(
                 entity_id=own.command_id,
@@ -212,13 +255,19 @@ class SymbolicReasoningEnv:
                     evaluation.already_attacking_target
                 ),
                 interceptors_launched=evaluation.interceptors_launched,
+                attack_quantity=attack_quantity,
                 target_evaluation=evaluation,
                 target_lon=target.longitude,
                 target_lat=target.latitude,
                 attack_altitude_level=self._attack_altitude_level(own, target),
-                is_patrol_aircraft=patrol_facts[0],
-                has_patrol_mission=patrol_facts[1],
-                inside_patrol_area=patrol_facts[2],
+                is_patrol_aircraft=patrol.is_patrol_aircraft,
+                has_patrol_mission=patrol.has_patrol_mission,
+                inside_patrol_area=patrol.inside_patrol_area,
+                mission_id=own.mission_id,
+                patrol_route_lons=patrol.route_lons,
+                patrol_route_lats=patrol.route_lats,
+                patrol_altitude_level=patrol.altitude_level,
+                waypoint_velocity_level=3,
                 altitude_above_sea_m=own.altitude_m,
                 sonobuoy_count=own.sonobuoy_count,
             )
@@ -230,7 +279,8 @@ class SymbolicReasoningEnv:
                 planned_for_target.add(own.command_id)
                 if evaluation.target_is_missile:
                     planned_interceptors[target_id] = (
-                        planned_interceptors.get(target_id, 0) + 1
+                        planned_interceptors.get(target_id, 0)
+                        + attack_quantity
                     )
 
         return facts_by_entity
@@ -264,6 +314,16 @@ class SymbolicReasoningEnv:
                 pursuit.append(evaluated)
 
         key = lambda item: (item[1].distance_km, item[1].target_id)
+        priority_intercepts = [
+            item
+            for item in immediate
+            if item[1].target_is_missile
+            and item[1].distance_km <= self.missile_intercept_distance_km
+        ]
+        if priority_intercepts:
+            # 5 km 只负责紧急规避；防空平台在更远距离就优先选择导弹，
+            # 避免先攻击较近舰艇而把拦截拖到末段。
+            return min(priority_intercepts, key=key)
         if immediate:
             return min(immediate, key=key)
         if pursuit:
@@ -386,7 +446,7 @@ class SymbolicReasoningEnv:
             return None
         return min(threats, key=lambda item: (item[0], item[1].command_id))[1]
 
-    def _patrol_facts(self, own: EncodedEntity) -> Tuple[bool, bool, bool]:
+    def _patrol_context(self, own: EncodedEntity) -> PatrolContext:
         info = self.mission_areas.get(own.mission_id)
         area_points: Sequence[Any] = ()
         mission_is_patrol = own.has_patrol_mission
@@ -409,7 +469,79 @@ class SymbolicReasoningEnv:
                 own.longitude, own.latitude, area_points
             )
         )
-        return is_patrol_aircraft, mission_is_patrol, inside
+        route_lons: Tuple[float, ...] = ()
+        route_lats: Tuple[float, ...] = ()
+        if is_patrol_aircraft:
+            route_lons, route_lats = self._build_patrol_route(
+                own, area_points
+            )
+        if own.altitude_m <= 500.0:
+            altitude_level = 1
+        elif own.altitude_m <= 5000.0:
+            altitude_level = 3
+        else:
+            altitude_level = 5
+        return PatrolContext(
+            is_patrol_aircraft=is_patrol_aircraft,
+            has_patrol_mission=mission_is_patrol,
+            inside_patrol_area=inside,
+            route_lons=route_lons,
+            route_lats=route_lats,
+            altitude_level=altitude_level,
+        )
+
+    @staticmethod
+    def _build_patrol_route(
+        own: EncodedEntity, raw_points: Sequence[Any]
+    ) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+        """把任务边界向中心收缩，生成始终位于区域内部的确定性巡逻航路。"""
+
+        points: List[Tuple[float, float]] = []
+        for item in raw_points:
+            if isinstance(item, Mapping):
+                lon = item.get("lon", item.get("longitude"))
+                lat = item.get("lat", item.get("latitude"))
+            elif isinstance(item, Sequence) and not isinstance(
+                item, (str, bytes)
+            ):
+                if len(item) < 2:
+                    continue
+                lon, lat = item[0], item[1]
+            else:
+                continue
+            try:
+                point = (float(lon), float(lat))
+            except (TypeError, ValueError):
+                continue
+            if not points or point != points[-1]:
+                points.append(point)
+        if len(points) > 1 and points[0] == points[-1]:
+            points.pop()
+        if len(points) < 3:
+            return (), ()
+
+        center_lon = sum(point[0] for point in points) / len(points)
+        center_lat = sum(point[1] for point in points) / len(points)
+        inset = [
+            (
+                center_lon + (lon - center_lon) * 0.8,
+                center_lat + (lat - center_lat) * 0.8,
+            )
+            for lon, lat in points
+        ]
+        start = min(
+            range(len(inset)),
+            key=lambda index: (
+                (inset[index][0] - own.longitude) ** 2
+                + (inset[index][1] - own.latitude) ** 2,
+                index,
+            ),
+        )
+        ordered = inset[start:] + inset[:start]
+        return (
+            tuple(point[0] for point in ordered),
+            tuple(point[1] for point in ordered),
+        )
 
     def _record_successful_attacks(
         self,
@@ -432,6 +564,7 @@ class SymbolicReasoningEnv:
                 started_frame=current_frame,
                 target_is_missile=entity_facts.target_is_missile,
                 target_aliases=(entity_facts.target_entity_id,),
+                interceptor_count=entity_facts.attack_quantity,
             )
 
     @staticmethod
@@ -606,6 +739,8 @@ def main_loop(
     execute_commands: bool,
     logger: Any,
     frontend_control: Optional[FrontendControl] = None,
+    executor: Any = None,
+    situation_provider: Optional[Callable[[], Mapping[str, Any]]] = None,
 ) -> None:
     step_index = 0
     while steps <= 0 or step_index < steps:
@@ -616,7 +751,20 @@ def main_loop(
             logger.info("[UI控制] 前端停止推演，符号推理循环退出")
             break
 
-        payload = load_situation(input_path)
+        try:
+            payload = (
+                situation_provider()
+                if situation_provider is not None
+                else load_situation(input_path)
+            )
+        except Exception as error:
+            if frontend_control is None:
+                raise
+            # 实时服务重启/短暂断连时不让长期运行进程退出。UI 监听会保持暂停，
+            # 服务恢复并再次返回 running 后从同一逻辑帧继续。
+            logger.warning("[实时态势] 本帧读取失败，等待服务恢复: %s", error)
+            time.sleep(max(0.1, interval))
+            continue
 
         # 文件读取期间可能收到暂停；执行前再次门控，避免在暂停后下发新命令。
         if (
@@ -630,6 +778,7 @@ def main_loop(
             payload,
             execute_commands=execute_commands,
             logger=logger,
+            executor=executor,
         )
         log_step(result, step_index, logger)
         step_index += 1
@@ -652,6 +801,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="可选任务区域 JSON；键为 mission_id，值含 is_patrol 和 area_points",
     )
     parser.add_argument(
+        "--ignore-rpc-missions",
+        action="store_true",
+        help="离线运行时不调用 getMissionList；默认从推演服务读取任务区域",
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=1,
@@ -662,6 +816,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         type=float,
         default=1.0,
         help="请求下一帧前的现实时间间隔（秒），不参与规则帧计时",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "从 --attack-rpc-target 的红方 GetThreeSituation 获取实时态势和 "
+            "Contact ID，并用 GetUnitData 补充真实武器库存；默认读取 --input 文件"
+        ),
+    )
+    parser.add_argument(
+        "--rpc-timeout",
+        type=float,
+        default=20.0,
+        help="实时态势、单位数据和 UI 状态 RPC 超时秒数；默认 20",
+    )
+    parser.add_argument(
+        "--missile-intercept-distance-km",
+        type=float,
+        default=MISSILE_INTERCEPT_PRIORITY_DISTANCE_KM,
+        help=(
+            "导弹进入该距离后优先于其他合法目标拦截；默认 50 km。"
+            "5 km 紧急规避阈值保持不变"
+        ),
+    )
+    parser.add_argument(
+        "--attack-rpc-target",
+        default=DEFAULT_ATTACK_RPC_TARGET,
+        help=(
+            "GetWeaponFiringInfo/AttackTarget 服务地址；默认 {}"
+        ).format(DEFAULT_ATTACK_RPC_TARGET),
     )
     parser.add_argument(
         "--dry-run",
@@ -677,12 +861,64 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     current_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     logger = Log(name=f"symbolic_reasoning_{current_time}", log_dir="logs")
+    live_source = None
+    if args.live:
+        live_source = RpcSituationSource(
+            rpc_target=args.attack_rpc_target,
+            timeout=args.rpc_timeout,
+            logger=logger,
+        )
+        logger.info(
+            "[实时态势] 已连接 rpc=%s，红方默认可控，武器库存来源=GetUnitData",
+            args.attack_rpc_target,
+        )
+    mission_areas: Dict[str, Any] = {}
+    if not args.ignore_rpc_missions:
+        try:
+            mission_areas.update(
+                load_project_mission_areas(
+                    fetcher=(
+                        live_source.fetch_missions
+                        if live_source is not None
+                        else None
+                    )
+                )
+            )
+            logger.info(
+                "[任务区域] getMissionList 加载任务数量={}".format(
+                    len(mission_areas)
+                )
+            )
+        except Exception as error:
+            logger.warning(
+                "[任务区域] getMissionList 读取失败，继续使用本地任务区域: %s",
+                error,
+            )
+    # 本地文件可覆盖同 missionId 的 RPC 数据，便于离线复现和人工校正。
+    mission_areas.update(_load_mission_areas(args.mission_areas))
     env = SymbolicReasoningEnv(
-        mission_areas=_load_mission_areas(args.mission_areas)
+        mission_areas=mission_areas,
+        missile_intercept_distance_km=args.missile_intercept_distance_km,
+    )
+    logger.info(
+        "[规则参数] missile_intercept_priority_km=%s missile_evade_km=%s",
+        args.missile_intercept_distance_km,
+        MISSILE_EVADE_DISTANCE_KM,
+    )
+    action_executor = functools.partial(
+        execute_actions,
+        rpc_target=args.attack_rpc_target,
     )
     frontend_control = None
     if not args.ignore_ui_control:
-        frontend_control = FrontendControl(logger=logger)
+        frontend_control = FrontendControl(
+            signal_provider=(
+                live_source.control_signal
+                if live_source is not None
+                else None
+            ),
+            logger=logger,
+        )
         frontend_control.start()
         logger.info("[UI控制] 已启动监听，等待前端运行信号")
     try:
@@ -694,10 +930,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             execute_commands=not args.dry_run,
             logger=logger,
             frontend_control=frontend_control,
+            executor=action_executor,
+            situation_provider=(
+                live_source.fetch_payload
+                if live_source is not None
+                else None
+            ),
         )
     except KeyboardInterrupt:
         logger.info("符号推理循环已停止")
     finally:
+        # 先关闭 gRPC channel，使可能阻塞在 GetEngineStatus 的后台监听调用
+        # 立即取消，再等待监听线程退出，避免 Ctrl+C 后额外等待 RPC 超时。
+        if live_source is not None:
+            live_source.close()
         if frontend_control is not None:
             frontend_control.close()
     return 0

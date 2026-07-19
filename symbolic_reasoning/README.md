@@ -2,27 +2,57 @@
 
 本目录实现 `rule.md` 中已经确认的业务规则：
 
-- 5 km 来袭导弹识别和固定右转 90° 规避；
+- 50 km 内来袭导弹优先拦截；进入 5 km 后触发固定右转 90° 紧急规避；
 - 按目标域选择射程、库存校验、攻击高度和期望武器类型；
 - 距离等于最大射程时允许提交攻击请求；
 - 只有飞机允许超距追击，进入射程后重新推理；
 - 飞机和潜艇需要严格小于 30°，水面舰艇免除朝向限制；
-- 攻击范围内最近合法目标优先；
-- 同一目标最多 3 个攻击者，命中或成功发射后 600 个后台数据帧释放；
+- 50 km 内的合法导弹目标优先于其他目标，否则选择攻击范围内最近合法目标；
+- 同一目标最多 3 个攻击者；在途武器消失时立即释放槽位，发射后 10 帧未形成武器实体时释放，600 帧为最终兜底；
 - 同一导弹目标生命周期内累计最多 4 发拦截弹；
-- 巡逻机在含边界的巡逻区内、距海面 0～500 m 时部署浮标。
+- 巡逻机在含边界的巡逻区内、距海面 0～500 m 时部署浮标；
+- 默认通过 `getMissionList` 获取巡逻区域，为巡逻飞机下达多点巡逻坐标。
 
 ## 文件
 
 - `entity.py`：读取 `data.data.UnitList`，编码字段、库存、任务、武器目标链路和删除反馈；
 - `agent.py`：统一 `TargetEvaluation` 攻击约束，匹配规则、输出推理路径并生成 8×5 Actor 动作矩阵；
-- `state.py`：维护并发攻击槽位、600 帧超时和累计拦截弹数量；
+- `state.py`：维护并发攻击槽位、在途武器消失/10 帧未出现/600 帧兜底释放和累计拦截弹数量；
 - `control.py`：监听前端开始、暂停和停止状态，并门控符号推理循环；
-- `execute_actions.py`：校验动作并复用根目录 `execute.execute_actions`；
+- `live.py`：读取红方视角 `GetThreeSituation` 的 Contact，并通过 `GetUnitData` 获取红方真实武器库存和射程；
+- `mission.py`：复用 `getMissionList`，保留任务名称、类型和区域坐标；
+- `execute_actions.py`：校验动作；非攻击动作复用公共 8×5 接口和 RPC 约定，攻击动作执行
+  `GetWeaponFiringInfo → 武器选择 → AttackTarget` 流水线；
 - `symbolic_reasoning4test.py`：类似 `maddpg4test.py` 的运行入口，默认实际执行；
 - `acceptance.py`：自动执行正确性、覆盖性、可解释性和性能测试。
 
 ## 默认推理并实际执行
+
+连接当前推演服务时，推荐使用实时模式：
+
+```powershell
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --live `
+  --steps 0 `
+  --attack-rpc-target 10.2.0.106:50051
+```
+
+`--steps 0` 表示持续逐帧推理。没有 `--dry-run` 时会实际执行；前端暂停后程序
+自动停止取帧和下发命令，前端继续后自动恢复。
+
+导弹优先拦截距离默认是 50 km，可通过 `--missile-intercept-distance-km` 调整，例如：
+
+```powershell
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --live `
+  --steps 0 `
+  --missile-intercept-distance-km 80 `
+  --attack-rpc-target 10.2.0.106:50051
+```
+
+这个参数只控制“多远开始优先拦截导弹”；5 km 紧急规避阈值保持不变。
+
+下面的命令是文件回放模式，主要用于离线复现和测试：
 
 ```powershell
 python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
@@ -31,9 +61,10 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
 执行链为：
 
 ```text
-态势编码 → 事实校验 → 最近合法目标 → 规则匹配 → 推理路径
+态势编码 → 事实校验 → 导弹优先/最近合法目标 → 规则匹配 → 推理路径
         → 8×5 动作矩阵 → symbolic_reasoning.execute_actions
-        → execute.execute_actions → 系统执行反馈
+        → 非攻击动作使用本目录的 protobuf 调用既有 RPC
+        → 攻击动作查询武器并调用 AttackTarget → 系统执行反馈
 ```
 
 时间口径：UI 的轮询间隔使用现实秒，`0～9` 表示 UI 的推演倍速；算法每成功
@@ -41,9 +72,9 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
 不乘 1x、5x、10x、Turbo 等时间压缩倍率。前端暂停期间不会取得下一帧，帧计数
 也不会增加。
 
-> 注意：符号推理动作矩阵会正确写入高度/速度等级，但当前根目录
-> `execute.py` 的航路和高度速度执行分支仍将两者固定为等级 4。若仿真系统必须
-> 实际采用等级 0/1/3/5，需要另行修改公共执行层；本目录未擅自改变神经算法共用接口。
+> 注意：符号推理执行层保持与项目一致的 8×5 动作格式，但不再导入根目录
+> `execute.py`。两套生成代码都使用 protobuf 的 `package proto`，放在同一 Python
+> 进程会产生描述符重名。符号执行层现在直接使用动作中的高度/速度等级 0/1/3/5。
 
 如果只检查推理结果、不向仿真系统下发命令，必须显式使用：
 
@@ -53,9 +84,11 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1 --dry-run
 
 ## 跟随前端自动暂停
 
-默认启动前端状态监听。程序每个现实秒通过根目录 `execute.get_control_signal()` 查询
-推演状态：收到 `pause` 后停止进入下一轮推理和命令下发，收到 `start` 或
+默认启动前端状态监听。实时模式通过同一个远程服务的 `GetEngineStatus` 查询状态；
+文件回放模式也通过本目录 protobuf 的 `GetEngineStatus` 查询状态。收到 `pause` 后停止进入下一轮推理和命令下发，收到 `start` 或
 `running` 后自动恢复，收到 `stop` 后退出循环。暂停时间不计入 `--steps`。
+主线程等待 UI 继续时采用 0.1 秒有界等待，因此在前端暂停状态下按 `Ctrl+C` 也会
+直接停止，不需要先从前端发送继续或停止信号。
 
 如果只在没有前端/仿真服务的环境中离线检查文件，可以显式关闭 UI 控制：
 
@@ -81,9 +114,18 @@ logs/symbolic_reasoning_YYYYMMDD_HHMMSS.log
 使用 `--dry-run` 时执行状态为 `DRY_RUN`；不使用该参数时默认实际执行，
 日志会记录实际执行状态以及相同的完整推理路径。
 
-## 弹药字段
+## 可控性和武器能力判定
 
-算法读取运行态势中可选的 `weaponNumber`：
+红方存活的非武器实体默认全部可控。旧 `getSituation` 中的 proto3
+`isCanManaged=false` 可能只是服务端未填写该字段，因此不再用它阻断红方命令。
+
+实时模式也不再相信旧 `getSituation` 中经常为 0 的 `weaponNumber.airNum`、
+`shipNum`、`subNum`。每帧会针对红方平台调用 `GetUnitData(unit_id)`，根据
+`unit_weapons` 中每种武器的实际剩余数量、武器类型和对空/对海/对潜射程，生成
+符号规则需要的“是否具有对应域武器”和“最大有效射程”事实。舰炮弹药不会被误算成
+防空导弹。
+
+文件回放模式仍可读取态势文件中的 `weaponNumber`，用于离线测试：
 
 ```json
 {
@@ -95,13 +137,69 @@ logs/symbolic_reasoning_YYYYMMDD_HHMMSS.log
 }
 ```
 
-只使用数量判断是否允许发射，不能指定具体武器；真正的武器选择交由系统。
-如果态势缺少对应库存数量，算法按 0 处理并安全拒绝攻击，不使用最大射程冒充弹药数量。
+实际执行攻击时，还会针对最终的攻击者和目标调用
+`GetWeaponFiringInfo(attacker_id, target_id)` 获取目标适用武器；执行层优先选择
+当前可发射的导弹/鱼雷（显式指定名称时优先匹配，例如 `YJ-18`），随后把
+`weapon_db_id` 和数量传给 `AttackTarget`。普通目标默认提交 2 发；导弹目标会
+依据累计最多 4 发规则缩减本次数量。
+因此实时攻击的判定链为：
 
-## 巡逻任务区域
+```text
+GetUnitData：平台确有对应域导弹和射程
+    → 符号规则：距离、朝向、并发和拦截弹累计限制均通过
+    → GetWeaponFiringInfo：该目标当前存在 can_fire=true 的合适武器
+    → AttackTarget
+```
 
-浮标规则需要任务类型和巡逻区域。可以在实体中提供 `missionId`、`missionType`，
-并通过 `--mission-areas` 加载任务区域：
+`GetUnitData` 查询失败时该平台本帧按无可确认武器处理，不使用最大射程冒充弹药数量。
+
+目标必须出现在红方视角 `GetThreeSituation` 中，且具有红方 `contactGuid`，才会
+进入攻击候选。全局/上帝视角可以看见但红方尚未形成 Contact 的蓝方实体不会自动
+开火，因为 `GetWeaponFiringInfo` 明确拒绝全局实体 GUID。旧态势产生的重复
+`NOT_FOUND` 只提示一次，不再每帧输出完整 warning。
+
+攻击 RPC 默认连接 `10.2.0.106:50051`，可在运行时修改：
+
+```powershell
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --attack-rpc-target 10.2.0.106:50051 `
+  --steps 1
+```
+
+也可以直接调用独立流水线函数：
+
+```python
+from symbolic_reasoning import execute_attack_pipeline
+
+result = execute_attack_pipeline(
+    attacker_id="我方单位ID",
+    target_id="敌方目标或Contact ID",
+    quantity=2,
+    preferred_weapon_name="YJ-18",
+    rpc_target="10.2.0.106:50051",
+    logger=logger,
+)
+```
+
+`result.success` 表示 `AttackTarget` RPC 是否成功接受请求；实际是否发射、命中
+仍以后续态势中的武器实体和攻击报告为准。候选武器、库存、可发射评估、最终
+选择和请求数量均通过 `logger.info(...)` 输出，作为执行阶段的可解释依据。
+
+## 巡逻任务区域和坐标执行
+
+默认运行时会通过本目录的 RPC stub 调用 `getMissionList()`。算法使用实体的 `missionId`
+匹配任务，保留 `missionName`、`missionType` 和 `areaPoints`。巡逻机没有紧急
+规避、攻击或浮标部署动作时，输出 `PATROL` 结论：
+
+```text
+任务区域顶点 → 向中心收缩 20% → 从距离飞机最近的点开始排序
+             → 多点航路 Actor → setUnitRoutew RPC
+```
+
+巡逻动作同时开启雷达和声呐。高度保持在飞机当前高度对应的离散层，速度使用
+等级 3。区域向内收缩可以避免浮点误差导致航点落到任务区外。
+
+`--mission-areas` 仍可加载本地 JSON，并覆盖相同 `missionId` 的 RPC 数据：
 
 ```json
 {
@@ -124,6 +222,7 @@ python -m symbolic_reasoning.symbolic_reasoning4test `
 ```
 
 多边形边界视为巡逻区域内，高度直接采用系统反馈的实体 `altitude`。
+离线运行且没有推演服务时，增加 `--ignore-rpc-missions`。
 
 ## 测试
 

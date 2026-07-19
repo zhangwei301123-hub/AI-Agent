@@ -360,9 +360,13 @@ class EntityEncoder:
         if side_name:
             is_own = side_name == OWN_SIDE_NAME and not is_contact
             is_enemy = side_name == ENEMY_SIDE_NAME
-        else:
+        elif side_id:
             is_own = side_id == own_side_id and not is_contact
             is_enemy = not is_own
+        else:
+            # 未知阵营不能被当作敌方自动攻击。
+            is_own = False
+            is_enemy = False
         is_weapon = _boolean(unit.get("IsWeapon"))
         unit_type = _integer(unit.get("unitType"))
         unit_category = _integer(unit.get("unitCategory"))
@@ -430,12 +434,9 @@ class EntityEncoder:
         jam_text = str(unit.get("JammText") or "")
         communication_ok = "通信中断" not in comm_text
         radar_jammed = "被干扰" in jam_text
-        is_can_managed = _boolean(
-            unit.get("isCanManaged", unit.get("IsCanManaged")), default=True
-        )
-        commandable = (
-            is_own and is_can_managed and not is_weapon and health_pct > 0.0
-        )
+        # SituationDataw 的 proto3 bool 未填写时也会呈现 False。按项目口径，
+        # 红方实体默认全部由符号智能体控制，不用该不可靠字段阻断命令。
+        commandable = is_own and not is_weapon and health_pct > 0.0
         weapon_impact = max(0, _integer(unit.get("WeaponImpact"), 0))
         weapon_target_distance_km = max(
             0.0, _number(unit.get("WeaponTargetDistance"), 0.0)

@@ -120,6 +120,7 @@ sonobuoy_available              是否携带可部署浮标
 | P4 | 射程与朝向约束 | 不满足则禁止立即攻击；只有飞机可转为追击/对准 |
 | P5 | 武器和攻击高度选择 | 满足攻击条件后确定攻击参数 |
 | P6 | 浮标部署 | 独立任务动作；不得与紧急规避冲突 |
+| P7 | 巡逻航路 | 无更高优先级动作时按任务区域下达巡逻坐标 |
 
 **已明确：** P1 来袭导弹规避优先于普通攻击。
 
@@ -401,7 +402,8 @@ AND weapon_selection_delegated_to_system = True
 1. R-WPN-002：target_domain=SURFACE                            → 命中
 2. 期望系统使用 ANTI_SHIP_MISSILE                              → 通过
 3. 对应武器数量 2 > 0                                         → 通过
-4. 向系统提交 fire_request=True；武器选择交由系统               → 输出
+4. GetWeaponFiringInfo 查询适用武器并选择可发射导弹/鱼雷          → 执行
+5. AttackTarget 提交 weapon_db_id 和受规则约束的发射数量           → 输出
 结论：REQUEST_ATTACK；expected_weapon_type=ANTI_SHIP_MISSILE
 依据：R-WPN-002
 ```
@@ -485,17 +487,24 @@ AND pursuit_candidates is empty
 THEN conclusion = NO_ATTACKABLE_TARGET
 ```
 
-**已明确：** 攻击范围内优先选择最近合法目标；只有飞机在没有射程内合法目标时，才可选择最近的射程外目标进行追击。距离相同时按 `target_id` 排序，保证同一输入得到稳定结论。
+**已明确：** 目标选择分为以下优先级：
+
+1. 对射程内、满足全部攻击约束且距离不超过 **50 km** 的导弹目标建立“优先拦截集合”，优先选择其中最近的导弹；
+2. 没有上述导弹时，在其他射程内合法目标中选择最近目标；
+3. 只有飞机在没有射程内合法目标时，才可选择最近的射程外目标进行追击；
+4. 距离相同时按 `target_id` 排序，保证同一输入得到稳定结论。
+
+50 km 是默认的导弹优先拦截距离，可通过运行参数 `--missile-intercept-distance-km` 调整。它与 R-MSL-001 的 5 km 紧急规避距离相互独立：导弹进入 50 km 后即可优先拦截，进入 5 km 后才触发横向 90° 规避。
 
 **推理路径示例：**
 
 ```text
-输入：T1=20 km（合法）；T2=12 km（合法）；T3=5 km（超并发上限）
-1. T1 通过类型、射程、并发检查                                  → 候选
-2. T2 通过类型、射程、并发检查                                  → 候选
+输入：T1=5 km（水面舰艇、合法）；M1=38 km（导弹、合法）；T3=4 km（超并发上限）
+1. T1 通过类型、射程、并发检查                                  → 普通候选
+2. M1 通过类型、射程、并发检查，且 38 km <= 50 km                → 优先拦截候选
 3. T3 已有 3 个攻击者                                            → 排除
-4. R-TGT-001：在 T1、T2 中选择最近目标 T2                        → 命中
-结论：selected_target=T2
+4. R-TGT-001：优先拦截集合非空，选择其中最近导弹 M1              → 命中
+结论：selected_target=M1
 依据：R-TGT-001、R-CON-001
 ```
 
@@ -520,20 +529,34 @@ AND try_next_nearest_target = True
 **已明确：**
 
 1. 在选定目标后、发出攻击请求前原子预留槽位；预留槽位也计入上限 3，避免多个实体同帧超限；
-2. 系统确认我方导弹成功发射后，将预留槽位转为正式占用，并记录 `slot_started_frame`；
-3. 系统反馈该导弹命中目标时立即释放槽位；
-4. 自 `slot_started_frame` 起满 600 个后台数据帧仍未收到命中反馈时，按超时释放槽位；
-5. 攻击请求失败、尚未成功发射时，回滚预留槽位；
-6. 导弹未命中或状态不明时，不提前释放，直到命中反馈或 600 帧超时。
+2. 系统确认攻击武器成功发射后，将预留槽位转为正式占用，并记录 `slot_started_frame`；
+3. 态势中出现指向该目标的我方武器实体时，标记为“已确认在途”；
+4. 已确认在途的我方武器实体随后从态势中消失时，下一帧立即释放该目标的并发槽位。该消失可能表示命中、被拦截或失效，均允许重新攻击；
+5. RPC 返回发射成功但连续 10 个后台数据帧仍未出现关联武器实体时，释放槽位，避免虚假成功或链路缺失造成长期锁定；
+6. 系统明确反馈目标命中或目标删除时立即释放槽位；
+7. 自 `slot_started_frame` 起满 600 个后台数据帧仍未被上述条件释放时，按硬超时兜底释放；
+8. 攻击请求失败、尚未成功发射时，立即回滚预留槽位。
 
 ```text
 IF system_feedback == MISSILE_HIT_TARGET
 THEN release_concurrency_slot = True
 
+IF own_weapon_was_seen_in_flight == True
+AND own_weapon_is_present_now == False
+THEN release_concurrency_slot = True
+AND release_reason = IN_FLIGHT_WEAPON_DISAPPEARED
+
+IF own_weapon_was_seen_in_flight == False
+AND current_frame - slot_started_frame >= 10 frames
+THEN release_concurrency_slot = True
+AND release_reason = WEAPON_ENTITY_NOT_OBSERVED
+
 IF current_frame - slot_started_frame >= 600 frames
 THEN release_concurrency_slot = True
-AND release_reason = ATTACK_SLOT_TIMEOUT
+AND release_reason = ATTACK_SLOT_HARD_TIMEOUT
 ```
+
+以上槽位释放只影响“本实体已有针对该目标的在途攻击”判断。对于导弹目标，R-INT-001 的累计最多 4 发限制仍按目标生命周期累计，已发射数量不会因我方拦截弹消失而回减。
 
 **推理路径示例：**
 
@@ -644,6 +667,50 @@ ELSE deploy_sonobuoy_allowed = False
 
 ---
 
+## R-PATROL-001 巡逻坐标任务
+
+**输入事实：**
+
+```text
+own_platform_role
+mission_id
+has_patrol_mission
+mission_area_points
+incoming_missile
+```
+
+**规则：**
+
+```text
+IF own_platform_role == PATROL_AIRCRAFT
+AND has_patrol_mission == True
+AND count(mission_area_points) >= 3
+AND no_higher_priority_action == True
+THEN patrol_route = inset(mission_area_points, 20%)
+AND patrol_route = rotate_start_to_nearest_point(patrol_route, own_position)
+AND enable_radar = True
+AND enable_sonar = True
+AND conclusion = PATROL
+```
+
+**推理路径示例：**
+
+```text
+输入：巡逻机 P1；missionId=M001；任务区域有 4 个顶点；无来袭导弹和合法攻击目标
+1. getMissionList：M001 匹配成功                              → 通过
+2. R-PATROL-001：任务名称或实体 missionType 表明是巡逻任务     → 通过
+3. R-PATROL-001：区域有效顶点数量=4                           → 通过
+4. 区域顶点向中心收缩 20%，从距离 P1 最近的航点开始排序        → 生成航路
+5. 输出多点航路并开启雷达、声呐                               → 执行
+结论：PATROL
+依据：R-PATROL-001
+```
+
+**执行约定：** 紧急规避、合法攻击和浮标部署的优先级均高于普通巡逻；
+巡逻航路通过现有 `execute_actions` 的航路 Actor 复用 `setUnitRoutew` RPC。
+
+---
+
 ## 5. 综合攻击推理路径
 
 ### 5.1 允许攻击水面舰艇
@@ -664,7 +731,7 @@ ELSE deploy_sonobuoy_allowed = False
 6. R-WPN-002：反舰导弹数量 2 > 0；系统负责选择武器              → 通过
 7. R-ALT-001：飞机攻击海平面目标，高度等级=1                   → 通过
 8. 生成攻击请求并预留并发槽位                                  → 输出
-9. 系统反馈发射成功后开始 600 帧槽位计时                        → 等待反馈
+9. 发射成功后跟踪我方在途武器；消失即释放，10/600 帧作为两级兜底 → 等待反馈
 结论：REQUEST_ATTACK S01
 依据：R-RNG、R-CON-001、R-AIM-002、R-WPN-002、R-ALT-001
 ```
@@ -707,7 +774,7 @@ ELSE deploy_sonobuoy_allowed = False
 4. 输出 CHASE_TO_RANGE，不输出发射请求                          → 输出
 5. 系统反馈新距离=95km                                          → 重新开始完整推理
 6. 导弹威胁、目标有效性、并发、射程、朝向和弹药检查全部通过      → 通过
-7. 输出 REQUEST_ATTACK；具体武器由系统选择                       → 输出
+7. 输出 REQUEST_ATTACK；执行层查询候选武器后调用 AttackTarget      → 输出
 结论：先 CHASE_TO_RANGE，进入射程并复检通过后 REQUEST_ATTACK
 依据：R-TGT-001、R-RNG-001～004、R-AIM、R-CON-001、R-WPN-002
 ```
@@ -772,6 +839,7 @@ ELSE deploy_sonobuoy_allowed = False
 ## 7. 人工确认结果
 
 - [x] 来袭导弹规避距离阈值：5 km，5 km 边界触发。
+- [x] 导弹优先拦截距离：默认 50 km，可通过 `--missile-intercept-distance-km` 调整；不改变 5 km 紧急规避阈值。
 - [x] 无导弹目标 ID 时：允许采用航向和距离推断是否指向我方。
 - [x] 规避方向：固定向右转 90°。
 - [x] 普通高度等级：0=海面，1=最低高度层，3=中高空层，5=最高高度层。
@@ -780,8 +848,13 @@ ELSE deploy_sonobuoy_allowed = False
 - [x] 最大射程边界：距离等于最大射程时允许提交攻击请求，最终成功与否以系统反馈为准。
 - [x] 潜艇攻击朝向：必须满足与目标方位差严格小于 30°。
 - [x] 超距追击：只有飞机允许；进入射程后重新检查并发、射程、朝向和弹药等条件。
-- [x] 武器接口：可获得武器数量；算法只能选择是否发射，具体武器由系统选择。
-- [x] 同目标并发槽位：我方导弹命中时释放，或自成功发射起 600 个后台数据帧超时释放。
+- [x] 可控性接口：红方存活的非武器实体默认可控，不再使用可能未填写的
+  `isCanManaged=false` 阻断命令。
+- [x] 武器接口：实时模式不使用不可靠的 `weaponNumber.airNum/shipNum/subNum`
+  判断能否攻击，而是通过 `GetUnitData.unit_weapons` 获得真实剩余数量、武器类型
+  和对应域射程；执行时再通过 `GetWeaponFiringInfo` 获得当前目标的候选武器和
+  `can_fire` 评估，并将选中的 `weapon_db_id` 和数量提交给 `AttackTarget`。
+- [x] 同目标并发槽位：已确认在途的我方武器消失时立即释放；成功发射后 10 帧仍未观察到关联武器实体时释放；命中/目标删除时释放；600 帧仅作为最终硬超时兜底。
 - [x] 拦截弹数量：同一导弹目标生命周期内累计最多 4 发。
 - [x] 浮标高度：距海面 0～500 m，0 m 和 500 m 边界均允许，采用系统反馈高度。
 - [x] 巡逻区域：边界视为区域内；只有承担巡逻任务的巡逻机允许部署浮标。
