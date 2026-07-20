@@ -32,6 +32,13 @@ class DetailedWeaponInventory:
     max_surface_range_km: float = 0.0
     max_land_range_km: float = 0.0
     max_submarine_range_km: float = 0.0
+    has_radar_sensor: bool = False
+    has_sonar_sensor: bool = False
+    has_strike_weapon_system: bool = False
+    strike_weapon_count: int = 0
+    fuel_percentage: float = -1.0
+    unit_status: str = ""
+    assigned_host: str = ""
     unit_name: str = ""
 
     @property
@@ -57,11 +64,25 @@ def inventory_from_unit_data(response: Any) -> DetailedWeaponInventory:
     max_surface = 0.0
     max_land = 0.0
     max_submarine = 0.0
+    has_radar_sensor = False
+    has_sonar_sensor = False
+    has_strike_weapon_system = False
+    strike_weapon_count = 0
+
+    sensor_params = getattr(response, "unir_sensor_params", None)
+    for sensor in getattr(sensor_params, "unir_sensor_params", ()):
+        # sensor_type describes equipment capability.  active_status only
+        # describes the current switch state, so it must not be used here.
+        sensor_type = str(getattr(sensor, "sensor_type", "") or "").casefold()
+        sensor_name = str(getattr(sensor, "sensor_name", "") or "").casefold()
+        descriptor = sensor_type or sensor_name
+        if "雷达" in descriptor or "radar" in descriptor:
+            has_radar_sensor = True
+        if any(marker in descriptor for marker in ("声呐", "声纳", "sonar")):
+            has_sonar_sensor = True
 
     for weapon in getattr(response, "unit_weapons", ()):
         quantity = max(0, int(getattr(weapon, "num", 0) or 0))
-        if quantity <= 0:
-            continue
         weapon_type = int(getattr(weapon, "weapon_type", 0) or 0)
         name = str(getattr(weapon, "text", "") or "")
         name_lower = name.casefold()
@@ -73,6 +94,16 @@ def inventory_from_unit_data(response: Any) -> DetailedWeaponInventory:
         submarine_range = max(
             0.0, float(getattr(weapon, "submarine_range_strike", 0.0))
         )
+        is_strike_weapon = (
+            weapon_type == GUIDED_WEAPON_TYPE
+            and any((air_range > 0.0, surface_range > 0.0, land_range > 0.0))
+        ) or submarine_range > 0.0
+        if is_strike_weapon:
+            has_strike_weapon_system = True
+            strike_weapon_count += quantity
+
+        if quantity <= 0:
+            continue
 
         # 对空、对海、对陆规则要求使用导弹；舰炮即使有对空射程也不计入导弹量。
         if weapon_type == GUIDED_WEAPON_TYPE:
@@ -96,6 +127,21 @@ def inventory_from_unit_data(response: Any) -> DetailedWeaponInventory:
 
     status = getattr(response, "unit_current_status", None)
     unit_name = str(getattr(status, "unit_name", "") or "")
+    unit_status = str(getattr(status, "text_block_unit_status", "") or "")
+    assigned_host = str(getattr(status, "text_block_assigned_host", "") or "")
+    fuel = getattr(response, "selected_unit_fuel", None)
+    fuel_present = fuel is not None
+    has_field = getattr(response, "HasField", None)
+    if callable(has_field):
+        try:
+            fuel_present = bool(has_field("selected_unit_fuel"))
+        except (TypeError, ValueError):
+            pass
+    fuel_percentage = (
+        float(getattr(fuel, "percen_tage", 0) or 0)
+        if fuel_present
+        else -1.0
+    )
     return DetailedWeaponInventory(
         air_count=air_count,
         surface_count=surface_count,
@@ -106,6 +152,13 @@ def inventory_from_unit_data(response: Any) -> DetailedWeaponInventory:
         max_surface_range_km=max_surface,
         max_land_range_km=max_land,
         max_submarine_range_km=max_submarine,
+        has_radar_sensor=has_radar_sensor,
+        has_sonar_sensor=has_sonar_sensor,
+        has_strike_weapon_system=has_strike_weapon_system,
+        strike_weapon_count=strike_weapon_count,
+        fuel_percentage=fuel_percentage,
+        unit_status=unit_status,
+        assigned_host=assigned_host,
         unit_name=unit_name,
     )
 
@@ -204,6 +257,18 @@ def _normalize_unit(
         "rangeStrike_Surface": range_surface,
         "rangeStrike_Land": range_land,
         "rangeStrike_Submarine": range_submarine,
+        "hasRadarSensor": inventory.has_radar_sensor,
+        "hasSonarSensor": inventory.has_sonar_sensor,
+        "hasStrikeWeaponSystem": inventory.has_strike_weapon_system,
+        "strikeWeaponCount": inventory.strike_weapon_count,
+        "fuelPercentage": (
+            inventory.fuel_percentage
+            if inventory.fuel_percentage >= 0.0
+            else float(unit.logisticStates.oil)
+        ),
+        "airStatus": str(unit.stateMap.AirStatus or ""),
+        "unitStatus": inventory.unit_status or str(unit.stateMap.UnitStatus or ""),
+        "assignedHost": inventory.assigned_host or str(unit.attrMapw.AirBase or ""),
         "weaponNumber": inventory.weapon_number,
         "missionId": str(unit.missionId or ""),
         "missionType": int(unit.missionType),
@@ -337,6 +402,16 @@ class RpcSituationSource:
                 float(unit.get("rangeStrike_Submarine") or 0.0),
                 inventory.max_submarine_range_km,
             )
+            unit["hasRadarSensor"] = inventory.has_radar_sensor
+            unit["hasSonarSensor"] = inventory.has_sonar_sensor
+            unit["hasStrikeWeaponSystem"] = (
+                inventory.has_strike_weapon_system
+            )
+            unit["strikeWeaponCount"] = inventory.strike_weapon_count
+            unit["fuelPercentage"] = inventory.fuel_percentage
+            unit["airStatus"] = inventory.unit_status
+            unit["unitStatus"] = inventory.unit_status
+            unit["assignedHost"] = inventory.assigned_host
 
         normalized_send_msg = dict(send_msg)
         normalized_send_msg["UnitList"] = units

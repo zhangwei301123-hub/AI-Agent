@@ -107,6 +107,24 @@ interceptors_launched           针对该导弹目标已经发射的拦截弹数
 inside_patrol_area              实体是否位于巡逻区域内或边界上
 has_patrol_mission              实体是否承担巡逻任务
 sonobuoy_available              是否携带可部署浮标
+is_airborne                    飞机是否处于在空/飞行/返航状态
+is_parked                      飞机是否处于停放/停机/已降落状态
+fuel_percentage                GetUnitData 返回的燃油百分比；未知为 -1
+fuel_low                       燃油信息已知且 fuel_percentage <= 20
+has_strike_weapon_system       平台是否确实安装过打击武器
+strike_weapon_count            当前剩余打击武器总数
+ammunition_low                 已安装打击武器且当前剩余数量为 0
+currently_attacking            跨帧攻击状态中是否有该实体的活动攻击槽位
+attack_target_missing_frames   原攻击目标连续未出现在红方态势中的帧数
+attack_target_loss_grace_frames 连续丢失多少帧后取消，默认 3
+attack_conditions_valid        原目标可见或仍在丢失宽限内，且授权、安全、油料条件有效
+fire_control_checked           本帧是否已执行或命中缓存的最终武器预检
+fire_control_available         GetWeaponFiringInfo 是否存在 can_fire=true 武器
+fire_control_cooldown          是否因同目标同质量的相同拒绝处于冷却
+fire_control_reason            可发射性结论或服务器拒绝原因
+target_quality_signature       Contact GUID、探测新鲜度、不确定区和识别状态的摘要
+takeoff_pending                起飞 RPC 已成功接受且仍在 10 帧防重复窗口
+return_pending                 返航 RPC 已成功接受且仍在 10 帧防重复窗口
 ```
 
 ## 3. 规则优先级
@@ -115,12 +133,13 @@ sonobuoy_available              是否携带可部署浮标
 |---:|---|---|
 | P0 | 事实非法/缺失 | 关键事实缺失时禁止危险动作 |
 | P1 | 来袭导弹规避 | 直接威胁时覆盖攻击、追击等普通动作 |
-| P2 | 目标选择 | 先得到合法候选目标，再判断攻击 |
-| P3 | 并发与拦截弹限制 | 防止同一目标攻击者或拦截弹数量超限 |
-| P4 | 射程与朝向约束 | 不满足则禁止立即攻击；只有飞机可转为追击/对准 |
-| P5 | 武器和攻击高度选择 | 满足攻击条件后确定攻击参数 |
-| P6 | 浮标部署 | 独立任务动作；不得与紧急规避冲突 |
-| P7 | 巡逻航路 | 无更高优先级动作时按任务区域下达巡逻坐标 |
+| P2 | 放弃失效攻击 | 原攻击条件消失时先取消攻击，避免与返航等动作冲突 |
+| P3 | 后勤返航 | 在空飞机低油或已耗尽安装的打击武器时返航 |
+| P4 | 停放飞机起飞 | 健康可控且停放的飞机起飞；已接受请求时等待 |
+| P5 | 目标选择 | 先得到合法候选目标，再判断攻击 |
+| P6 | 并发、射程、朝向与武器 | 检查全部攻击约束，执行可发射性预检并确定攻击参数 |
+| P7 | 浮标部署 | 独立任务动作；不得与更高优先级动作冲突 |
+| P8 | 巡逻/搜索 | 无更高优先级动作时巡逻或按装备能力搜索 |
 
 **已明确：** P1 来袭导弹规避优先于普通攻击。
 
@@ -203,6 +222,75 @@ THEN
 结论：EVADE_MISSILE
 依据：R-MSL-001、R-MSL-002
 ```
+
+---
+
+## R-CANCEL-001～002 攻击条件失效与放弃打击
+
+```text
+IF currently_attacking == True
+AND attack_conditions_valid == False
+THEN conclusion = CANCEL_ATTACK
+AND actor[7] = enabled
+AND rpc = cancelAttackw(own_id)                         [R-CANCEL-001]
+
+IF currently_attacking == True
+AND attack_conditions_valid == True
+THEN conclusion = HOLD
+AND do_not_generate_conflicting_action = True           [R-CANCEL-002]
+```
+
+`attack_conditions_valid` 通过稳定实体 GUID 关联重新捕获后变化的 Contact GUID。
+目标消失时累计 `attack_target_missing_frames`：默认第 1～2 个连续丢失帧仍保持
+攻击，第 3 帧才失效；任一帧重新发现即清零。因此单帧探测闪烁不会触发
+`cancelAttackw`。红方 Contact 的 `BloodAmount=0` 视为健康未知，不据此取消；
+明确的删除/命中反馈仍会释放目标。实体还必须可控、通信安全且未触发低油。
+取消 RPC 成功后立即释放该攻击者占用的攻击槽位；
+如果同时低油，则下一帧进入返航规则。弹药耗尽不取消已经形成的在途攻击，待该
+攻击结束、槽位释放后再进入返航规则。
+
+---
+
+## R-RTB-001～002 油量/弹药不足返航
+
+```text
+fuel_low = fuel_percentage 已知 AND fuel_percentage <= 20
+ammunition_low = has_strike_weapon_system AND strike_weapon_count == 0
+
+IF is_aircraft AND is_airborne
+AND (fuel_low OR ammunition_low)
+AND return_pending == False
+THEN conclusion = RETURN_TO_BASE
+AND actor[1] = enabled
+AND rpc = aircraftReturnToBasew(own_id)                 [R-RTB-001]
+
+IF return_pending == True
+THEN conclusion = HOLD                                  [R-RTB-002]
+```
+
+非武装任务飞机的 `has_strike_weapon_system=False`，不会因为武器数量为 0 被误判
+返航。成功接受的返航请求在 10 帧内不重复下发；飞机进入停放状态后立即清除等待
+状态，10 帧仍无状态变化则允许重试。
+
+---
+
+## R-TAKEOFF-001～002 停放飞机起飞
+
+```text
+IF is_aircraft AND is_parked AND attack_authorized
+AND takeoff_pending == False
+THEN conclusion = TAKEOFF
+AND actor[0] = enabled
+AND rpc = aircraftTakeOffSinglew(own_id)                [R-TAKEOFF-001]
+
+IF takeoff_pending == True
+THEN conclusion = HOLD                                  [R-TAKEOFF-002]
+```
+
+状态优先使用 `GetUnitData.unit_current_status.text_block_unit_status`；旧态势使用
+`stateMap.AirStatus/UnitStatus`。缺少状态文字时，仅将高度大于 10 m 或速度不低于
+30 判为在空，将高度 -5～10 m 且速度 0～5 判为停放，其余模糊状态不触发起飞。
+成功接受的起飞请求在 10 帧内不重复下发，观测到飞机进入在空状态后立即清除。
 
 ---
 
@@ -384,6 +472,14 @@ AND reason = NO_MATCHING_WEAPON
 
 IF compatible_weapon_count > 0
 AND all_other_attack_constraints_passed == True
+THEN query GetWeaponFiringInfo(attacker_id, contact_id)
+
+IF fire_control_checked == True
+AND fire_control_available == False
+THEN conclusion = HOLD                                      [R-FIRE-001]
+AND do_not_call_AttackTarget = True
+
+IF fire_control_available == True
 THEN fire_request = True
 AND weapon_selection_delegated_to_system = True
 ```
@@ -393,7 +489,11 @@ AND weapon_selection_delegated_to_system = True
 1. 算法能够获得对应类型武器的剩余数量；
 2. 执行接口只能选择“是否发射”，不能显式指定武器类型；
 3. `expected_weapon_type` 用于规则匹配、库存检查和解释输出，真正发射何种武器由系统根据目标自动选择；
-4. 系统反馈发射失败时，最终执行状态记为 `ATTACK_FAILED`，并保留系统返回原因。
+4. `GetWeaponFiringInfo` 的 `can_fire` 属于最终攻击事实，不再等到执行层失败后才处理；
+5. 无可立即发射武器时输出 `HOLD`，保留服务器原因并进入默认 10 帧冷却；
+6. 冷却键为攻击方、稳定目标 GUID、Contact 质量和拒绝原因。Contact GUID、探测
+   新鲜度等级、不确定区、目标类别或识别状态变化时立即重试；否则冷却到期再重试；
+7. 执行层在 `AttackTarget` 前再次复核，防止推理与提交之间的服务状态变化。
 
 **推理路径示例：**
 
@@ -402,7 +502,7 @@ AND weapon_selection_delegated_to_system = True
 1. R-WPN-002：target_domain=SURFACE                            → 命中
 2. 期望系统使用 ANTI_SHIP_MISSILE                              → 通过
 3. 对应武器数量 2 > 0                                         → 通过
-4. GetWeaponFiringInfo 查询适用武器并选择可发射导弹/鱼雷          → 执行
+4. R-FIRE-001：GetWeaponFiringInfo 至少一个候选 can_fire=true       → 通过
 5. AttackTarget 提交 weapon_db_id 和受规则约束的发射数量           → 输出
 结论：REQUEST_ATTACK；expected_weapon_type=ANTI_SHIP_MISSILE
 依据：R-WPN-002
@@ -688,8 +788,8 @@ AND count(mission_area_points) >= 3
 AND no_higher_priority_action == True
 THEN patrol_route = inset(mission_area_points, 20%)
 AND patrol_route = rotate_start_to_nearest_point(patrol_route, own_position)
-AND enable_radar = True
-AND enable_sonar = True
+AND enable_radar = has_radar_sensor
+AND enable_sonar = has_sonar_sensor
 AND conclusion = PATROL
 ```
 
@@ -701,13 +801,35 @@ AND conclusion = PATROL
 2. R-PATROL-001：任务名称或实体 missionType 表明是巡逻任务     → 通过
 3. R-PATROL-001：区域有效顶点数量=4                           → 通过
 4. 区域顶点向中心收缩 20%，从距离 P1 最近的航点开始排序        → 生成航路
-5. 输出多点航路并开启雷达、声呐                               → 执行
+5. 输出多点航路，仅开启平台实际装备的雷达/声呐                 → 执行
 结论：PATROL
 依据：R-PATROL-001
 ```
 
 **执行约定：** 紧急规避、合法攻击和浮标部署的优先级均高于普通巡逻；
-巡逻航路通过现有 `execute_actions` 的航路 Actor 复用 `setUnitRoutew` RPC。
+巡逻航路通过现有 `execute_actions` 的航路 Actor 复用 `setUnitRoutew` RPC。平台
+未装备雷达和声呐时仍执行巡逻航路，但不发送 `controlUnitSensorw`。
+
+---
+
+## R-SEARCH-001 / R-SEARCH-002 普通搜索
+
+```text
+IF detected_target_count == 0
+AND (has_radar_sensor == True OR has_sonar_sensor == True)
+THEN enable_radar = has_radar_sensor
+AND enable_sonar = has_sonar_sensor
+AND conclusion = SEARCH                         [R-SEARCH-001]
+
+IF detected_target_count == 0
+AND has_radar_sensor == False
+AND has_sonar_sensor == False
+THEN do_not_send_sensor_control = True
+AND conclusion = HOLD                           [R-SEARCH-002]
+```
+
+传感器能力来自 `GetUnitData.unir_sensor_params` 的装备清单；`active_status` 仅是
+当前开关状态，不用于判断平台是否具备该传感器。
 
 ---
 
@@ -852,8 +974,13 @@ AND conclusion = PATROL
   `isCanManaged=false` 阻断命令。
 - [x] 武器接口：实时模式不使用不可靠的 `weaponNumber.airNum/shipNum/subNum`
   判断能否攻击，而是通过 `GetUnitData.unit_weapons` 获得真实剩余数量、武器类型
-  和对应域射程；执行时再通过 `GetWeaponFiringInfo` 获得当前目标的候选武器和
-  `can_fire` 评估，并将选中的 `weapon_db_id` 和数量提交给 `AttackTarget`。
+  和对应域射程；推理最终决策前通过 `GetWeaponFiringInfo` 获得当前目标的候选
+  武器和 `can_fire` 评估，无可发射武器时 `HOLD`，通过后才将选中的
+  `weapon_db_id` 和数量提交给 `AttackTarget`。
+- [x] 攻击拒绝冷却：相同攻击方、稳定目标、Contact 质量和拒绝原因默认冷却
+  10 帧；Contact 质量变化立即重试，否则到期重试。
+- [x] Contact 丢失防抖：通过稳定实体 GUID 关联变化的 Contact GUID，默认连续
+  丢失 3 帧才取消攻击，重新发现立即清零。
 - [x] 同目标并发槽位：已确认在途的我方武器消失时立即释放；成功发射后 10 帧仍未观察到关联武器实体时释放；命中/目标删除时释放；600 帧仅作为最终硬超时兜底。
 - [x] 拦截弹数量：同一导弹目标生命周期内累计最多 4 发。
 - [x] 浮标高度：距海面 0～500 m，0 m 和 500 m 边界均允许，采用系统反馈高度。

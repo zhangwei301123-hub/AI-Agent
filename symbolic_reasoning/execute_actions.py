@@ -36,7 +36,23 @@ class AttackPipelineResult:
     candidate_evidence: Tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class WeaponFirePrecheck:
+    """供推理层使用的 GetWeaponFiringInfo 标准化结果。"""
+
+    can_fire: bool
+    attacker_id: str
+    target_id: str
+    weapon_db_id: Optional[int] = None
+    weapon_name: str = ""
+    ready_quantity: int = 0
+    reason: str = ""
+    reason_key: str = ""
+    candidate_evidence: Tuple[str, ...] = ()
+
+
 AttackPipelineBackend = Callable[..., AttackPipelineResult]
+WeaponFirePrecheckBackend = Callable[..., WeaponFirePrecheck]
 
 # 旧态势可能给出全局实体 GUID 而不是红方 Contact ID。相同失败只提示一次，
 # 避免持续推演时每帧刷出完整 gRPC NOT_FOUND 堆栈。
@@ -133,7 +149,8 @@ def _ready_quantity(weapon: Any) -> int:
 
     evaluations = tuple(getattr(weapon, "fire_evaluations", ()) or ())
     if not evaluations:
-        return max(0, int(getattr(weapon, "total_quantity", 0)))
+        # 实时模式要求明确的 can_fire 证据；只有库存但没有评估时安全拒绝。
+        return 0
     return sum(
         max(0, int(getattr(evaluation, "quantity", 0)))
         for evaluation in evaluations
@@ -224,6 +241,148 @@ def _choose_weapon(
     return selected, tuple(evidence)
 
 
+def _weapon_denial_details(suitable_weapons: Sequence[Any]) -> Tuple[str, ...]:
+    details: List[str] = []
+    for weapon in suitable_weapons:
+        auto_denied = str(
+            getattr(weapon, "auto_fire_denied_reason", "") or ""
+        ).strip()
+        if auto_denied and auto_denied not in details:
+            details.append(auto_denied)
+        evaluations = tuple(
+            getattr(weapon, "fire_evaluations", ()) or ()
+        )
+        if not evaluations and "fire_evaluations=empty" not in details:
+            details.append("fire_evaluations=empty")
+        for evaluation in evaluations:
+            if bool(getattr(evaluation, "can_fire", False)):
+                continue
+            denied = str(
+                getattr(evaluation, "evaluation", "") or ""
+            ).strip()
+            if denied and denied not in details:
+                details.append(denied)
+    if not suitable_weapons:
+        details.append("suitable_weapons=empty")
+    return tuple(details)
+
+
+def _rpc_error_key(error: Exception) -> str:
+    try:
+        code = str(error.code())
+    except (AttributeError, TypeError):
+        code = type(error).__name__
+    return "GET_WEAPON_RPC_ERROR:{}".format(code)
+
+
+def precheck_weapon_fire(
+    attacker_id: str,
+    target_id: str,
+    quantity: int = DEFAULT_ATTACK_QUANTITY,
+    mode: str = "manual",
+    preferred_weapon_name: Optional[str] = None,
+    rpc_target: Optional[str] = None,
+    timeout: float = 10.0,
+    logger: Any = None,
+    stub: Any = None,
+) -> WeaponFirePrecheck:
+    """只查询并评估武器，不提交攻击；失败结果可供跨帧冷却。"""
+
+    _validate_attack_request(attacker_id, target_id, quantity, mode)
+    if not isinstance(timeout, (int, float)) or float(timeout) <= 0.0:
+        raise ActionValidationError("timeout 必须大于 0")
+    endpoint = (
+        rpc_target
+        or os.environ.get("SYMBOLIC_REASONING_RPC_TARGET")
+        or DEFAULT_ATTACK_RPC_TARGET
+    )
+    channel = None
+    try:
+        from . import engine_pb2, engine_pb2_grpc
+
+        if stub is None:
+            import grpc
+
+            channel = grpc.insecure_channel(endpoint)
+            grpc.channel_ready_future(channel).result(timeout=float(timeout))
+            stub = engine_pb2_grpc.SimulationServiceStub(channel)
+        _log(
+            logger,
+            "info",
+            "[攻击预检] GetWeaponFiringInfo attacker_id=%s target_id=%s rpc=%s",
+            attacker_id,
+            target_id,
+            endpoint,
+        )
+        response = stub.GetWeaponFiringInfo(
+            engine_pb2.GetWeaponFiringInfoRequest(
+                attacker_unit_id=attacker_id,
+                target_unit_id=target_id,
+            ),
+            timeout=float(timeout),
+        )
+        _MISSING_CONTACT_WARNED.discard((attacker_id, target_id))
+        suitable_weapons = tuple(response.suitable_weapons)
+        selected, evidence = _choose_weapon(
+            suitable_weapons,
+            preferred_weapon_name=preferred_weapon_name,
+        )
+        for item in evidence:
+            _log(logger, "info", "[攻击预检] 候选依据 %s", item)
+        if selected is not None:
+            return WeaponFirePrecheck(
+                can_fire=True,
+                attacker_id=attacker_id,
+                target_id=target_id,
+                weapon_db_id=int(selected.weapon_db_id),
+                weapon_name=str(selected.weapon_name or ""),
+                ready_quantity=_ready_quantity(selected),
+                reason="GetWeaponFiringInfo 存在 can_fire=true 的可立即发射武器",
+                reason_key="CAN_FIRE",
+                candidate_evidence=evidence,
+            )
+
+        denial_details = _weapon_denial_details(suitable_weapons)
+        reason = "GetWeaponFiringInfo 无可立即发射武器"
+        if denial_details:
+            reason += "：{}".format(" | ".join(denial_details))
+        return WeaponFirePrecheck(
+            can_fire=False,
+            attacker_id=attacker_id,
+            target_id=target_id,
+            reason=reason,
+            reason_key="NO_READY_WEAPON:{}".format(
+                "|".join(denial_details) or "unspecified"
+            ),
+            candidate_evidence=evidence,
+        )
+    except Exception as error:
+        reason = "GetWeaponFiringInfo RPC 失败：{}".format(error)
+        if _is_missing_target_contact(error):
+            warning_key = (attacker_id, target_id)
+            if warning_key not in _MISSING_CONTACT_WARNED:
+                _MISSING_CONTACT_WARNED.add(warning_key)
+                _log(
+                    logger,
+                    "info",
+                    "[攻击预检] 跳过非红方有效Contact target_id=%s；"
+                    "相同目标进入冷却",
+                    target_id,
+                )
+        else:
+            _log(logger, "warning", "[攻击预检] %s", reason)
+        return WeaponFirePrecheck(
+            can_fire=False,
+            attacker_id=attacker_id,
+            target_id=target_id,
+            reason=reason,
+            reason_key=_rpc_error_key(error),
+        )
+    finally:
+        if channel is not None:
+            channel.close()
+
+
 def execute_attack_pipeline(
     attacker_id: str,
     target_id: str,
@@ -252,8 +411,7 @@ def execute_attack_pipeline(
         or DEFAULT_ATTACK_RPC_TARGET
     )
     channel = None
-    selected = None
-    evidence: Tuple[str, ...] = ()
+    precheck: Optional[WeaponFirePrecheck] = None
 
     try:
         from . import engine_pb2, engine_pb2_grpc
@@ -265,32 +423,19 @@ def execute_attack_pipeline(
             grpc.channel_ready_future(channel).result(timeout=float(timeout))
             stub = engine_pb2_grpc.SimulationServiceStub(channel)
 
-        _log(
-            logger,
-            "info",
-            "[攻击流水线] 查询可用武器 attacker_id=%s target_id=%s rpc=%s",
-            attacker_id,
-            target_id,
-            endpoint,
-        )
-        firing_info = stub.GetWeaponFiringInfo(
-            engine_pb2.GetWeaponFiringInfoRequest(
-                attacker_unit_id=attacker_id,
-                target_unit_id=target_id,
-            ),
-            timeout=float(timeout),
-        )
-        _MISSING_CONTACT_WARNED.discard((attacker_id, target_id))
-        suitable_weapons = tuple(firing_info.suitable_weapons)
-        selected, evidence = _choose_weapon(
-            suitable_weapons,
+        precheck = precheck_weapon_fire(
+            attacker_id=attacker_id,
+            target_id=target_id,
+            quantity=quantity,
+            mode=mode,
             preferred_weapon_name=preferred_weapon_name,
+            rpc_target=endpoint,
+            timeout=timeout,
+            logger=logger,
+            stub=stub,
         )
-        for item in evidence:
-            _log(logger, "info", "[攻击流水线] 候选依据 %s", item)
-
-        if selected is None:
-            reason = "GetWeaponFiringInfo 未返回当前可立即发射的合适武器"
+        if not precheck.can_fire or precheck.weapon_db_id is None:
+            reason = precheck.reason
             _log(logger, "warning", "[攻击流水线] 拒绝攻击：%s", reason)
             return AttackPipelineResult(
                 success=False,
@@ -299,12 +444,12 @@ def execute_attack_pipeline(
                 requested_quantity=quantity,
                 mode=mode,
                 reason=reason,
-                candidate_evidence=evidence,
+                candidate_evidence=precheck.candidate_evidence,
             )
 
-        weapon_db_id = int(selected.weapon_db_id)
-        weapon_name = str(selected.weapon_name or "")
-        ready = _ready_quantity(selected)
+        weapon_db_id = precheck.weapon_db_id
+        weapon_name = precheck.weapon_name
+        ready = precheck.ready_quantity
         submitted_quantity = quantity if mode in ("salvo", "all") else min(
             quantity, ready
         )
@@ -350,7 +495,7 @@ def execute_attack_pipeline(
             submitted_quantity=submitted_quantity,
             mode=mode,
             reason=reason,
-            candidate_evidence=evidence,
+            candidate_evidence=precheck.candidate_evidence,
         )
     except Exception as error:
         reason = "攻击流水线 RPC 失败：{}".format(error)
@@ -372,13 +517,15 @@ def execute_attack_pipeline(
             attacker_id=attacker_id,
             target_id=target_id,
             weapon_db_id=(
-                int(getattr(selected, "weapon_db_id", 0)) if selected else None
+                precheck.weapon_db_id if precheck is not None else None
             ),
-            weapon_name=(str(getattr(selected, "weapon_name", "")) if selected else ""),
+            weapon_name=(precheck.weapon_name if precheck is not None else ""),
             requested_quantity=quantity,
             mode=mode,
             reason=reason,
-            candidate_evidence=evidence,
+            candidate_evidence=(
+                precheck.candidate_evidence if precheck is not None else ()
+            ),
         )
     finally:
         if channel is not None:

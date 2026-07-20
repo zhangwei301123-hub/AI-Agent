@@ -10,16 +10,19 @@
 - 50 km 内的合法导弹目标优先于其他目标，否则选择攻击范围内最近合法目标；
 - 同一目标最多 3 个攻击者；在途武器消失时立即释放槽位，发射后 10 帧未形成武器实体时释放，600 帧为最终兜底；
 - 同一导弹目标生命周期内累计最多 4 发拦截弹；
+- 健康可控且处于停放状态的飞机主动起飞，并防止逐帧重复下发；
+- 在空飞机燃油不高于 20%，或已安装的打击武器耗尽时返航；
+- 已有攻击的目标/授权/安全/后勤条件消失时主动调用 `cancelAttackw`；
 - 巡逻机在含边界的巡逻区内、距海面 0～500 m 时部署浮标；
 - 默认通过 `getMissionList` 获取巡逻区域，为巡逻飞机下达多点巡逻坐标。
 
 ## 文件
 
-- `entity.py`：读取 `data.data.UnitList`，编码字段、库存、任务、武器目标链路和删除反馈；
+- `entity.py`：读取 `data.data.UnitList`，编码油量、停放/在空状态、库存、任务、武器目标链路和删除反馈；
 - `agent.py`：统一 `TargetEvaluation` 攻击约束，匹配规则、输出推理路径并生成 8×5 Actor 动作矩阵；
-- `state.py`：维护并发攻击槽位、在途武器消失/10 帧未出现/600 帧兜底释放和累计拦截弹数量；
+- `state.py`：维护并发攻击槽位、起飞/返航防重复窗口、在途武器释放和累计拦截弹数量；
 - `control.py`：监听前端开始、暂停和停止状态，并门控符号推理循环；
-- `live.py`：读取红方视角 `GetThreeSituation` 的 Contact，并通过 `GetUnitData` 获取红方真实武器库存和射程；
+- `live.py`：读取红方视角态势，并通过 `GetUnitData` 获取红方真实武器、传感器、油量和运行状态；
 - `mission.py`：复用 `getMissionList`，保留任务名称、类型和区域坐标；
 - `execute_actions.py`：校验动作；非攻击动作复用公共 8×5 接口和 RPC 约定，攻击动作执行
   `GetWeaponFiringInfo → 武器选择 → AttackTarget` 流水线；
@@ -137,8 +140,10 @@ logs/symbolic_reasoning_YYYYMMDD_HHMMSS.log
 }
 ```
 
-实际执行攻击时，还会针对最终的攻击者和目标调用
-`GetWeaponFiringInfo(attacker_id, target_id)` 获取目标适用武器；执行层优先选择
+实时推理在生成 `REQUEST_ATTACK` 前，会针对最终的攻击者和目标调用
+`GetWeaponFiringInfo(attacker_id, target_id)`，并把 `can_fire`、拒绝原因和冷却状态
+写入 `ReasoningFacts`。没有可立即发射武器时直接输出 `HOLD`，不会再进入
+`AttackTarget`。执行层会在真正提交前再做一次防御性复核，并优先选择
 当前可发射的导弹/鱼雷（显式指定名称时优先匹配，例如 `YJ-18`），随后把
 `weapon_db_id` 和数量传给 `AttackTarget`。普通目标默认提交 2 发；导弹目标会
 依据累计最多 4 发规则缩减本次数量。
@@ -152,6 +157,16 @@ GetUnitData：平台确有对应域导弹和射程
 ```
 
 `GetUnitData` 查询失败时该平台本帧按无可确认武器处理，不使用最大射程冒充弹药数量。
+
+相同“攻击方 + 稳定目标实体 GUID + Contact 质量 + 拒绝原因”默认冷却 10 帧，
+冷却内不重复调用 `GetWeaponFiringInfo`；冷却到期后重试。Contact GUID、探测
+新鲜度等级、不确定区、目标类别或识别状态发生变化时，视为 Contact 质量变化，
+立即解除旧冷却并重新预检。可用 `--fire-rejection-cooldown-frames` 调整窗口。
+
+成功攻击后按稳定目标实体 GUID 关联可能变化的 Contact GUID。目标短暂消失的
+前 2 帧保持现有攻击，第 3 个连续丢失帧才生成 `CANCEL_ATTACK`；重新捕获会把
+计数清零。可用 `--target-loss-grace-frames` 调整阈值。Contact 的
+`BloodAmount=0` 在红方视角表示未知，不单独作为取消依据。
 
 目标必须出现在红方视角 `GetThreeSituation` 中，且具有红方 `contactGuid`，才会
 进入攻击候选。全局/上帝视角可以看见但红方尚未形成 Contact 的蓝方实体不会自动
@@ -196,8 +211,10 @@ result = execute_attack_pipeline(
              → 多点航路 Actor → setUnitRoutew RPC
 ```
 
-巡逻动作同时开启雷达和声呐。高度保持在飞机当前高度对应的离散层，速度使用
-等级 3。区域向内收缩可以避免浮点误差导致航点落到任务区外。
+巡逻和普通搜索只开启平台实际装备的雷达/声呐。实时模式通过
+`GetUnitData.unir_sensor_params` 读取装备能力，不把当前 `active_status` 当成能力；
+没有雷达和声呐的平台不发送 `controlUnitSensorw`。高度保持在飞机当前高度对应的
+离散层，速度使用等级 3。区域向内收缩可以避免浮点误差导致航点落到任务区外。
 
 `--mission-areas` 仍可加载本地 JSON，并覆盖相同 `missionId` 的 RPC 数据：
 

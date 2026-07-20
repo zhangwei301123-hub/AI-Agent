@@ -11,12 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
+import numpy as np
+
 from log import Log
 
 from .agent import (
     Conclusion,
     Decision,
     ReasoningFacts,
+    RETURN_FUEL_THRESHOLD_PCT,
     SymbolicReasoningAgent,
     TargetEvaluation,
 )
@@ -30,11 +33,18 @@ from .entity import (
 )
 from .mission import load_project_mission_areas
 from .live import RpcSituationSource
-from .state import EngagementState
+from .state import (
+    FIRE_CONTROL_REJECTION_COOLDOWN_FRAMES,
+    TARGET_CONTACT_LOSS_GRACE_FRAMES,
+    EngagementState,
+)
 from .execute_actions import (
     DEFAULT_ATTACK_QUANTITY,
     DEFAULT_ATTACK_RPC_TARGET,
+    WeaponFirePrecheck,
+    WeaponFirePrecheckBackend,
     execute_actions,
+    precheck_weapon_fire,
 )
 
 
@@ -78,11 +88,16 @@ class SymbolicReasoningEnv:
         ),
         mission_areas: Optional[Mapping[str, Any]] = None,
         engagement_state: Optional[EngagementState] = None,
+        weapon_fire_prechecker: Optional[WeaponFirePrecheckBackend] = None,
     ) -> None:
         if not 0.0 < aim_tolerance_deg <= 180.0:
             raise ValueError("aim_tolerance_deg 必须位于 (0, 180]")
         if missile_intercept_distance_km <= 0.0:
             raise ValueError("missile_intercept_distance_km 必须大于 0")
+        if weapon_fire_prechecker is not None and not callable(
+            weapon_fire_prechecker
+        ):
+            raise ValueError("weapon_fire_prechecker 必须可调用或为 None")
         self.encoder = EntityEncoder(max_entities=max_entities)
         self.agent = SymbolicReasoningAgent()
         self.aim_tolerance_deg = float(aim_tolerance_deg)
@@ -91,6 +106,8 @@ class SymbolicReasoningEnv:
         )
         self.mission_areas = dict(mission_areas or {})
         self.engagement_state = engagement_state or EngagementState()
+        self.weapon_fire_prechecker = weapon_fire_prechecker
+        self._geometry_cache: Dict[int, Tuple[float, float]] = {}
         self.current_step = 0
 
     def step(
@@ -120,6 +137,9 @@ class SymbolicReasoningEnv:
             execution_status = run_result.execution_status
             self._record_successful_attacks(
                 facts, decisions, execution_status, current_frame
+            )
+            self._record_successful_lifecycle_actions(
+                decisions, execution_status, current_frame
             )
         else:
             decisions, actions_dict = self.agent.build_actions(facts.values())
@@ -151,6 +171,86 @@ class SymbolicReasoningEnv:
         planned_interceptors: Dict[str, int] = {}
 
         for own in sorted(situation.own_entities, key=lambda item: item.command_id):
+            fuel_low = (
+                own.is_aircraft
+                and own.fuel_percentage >= 0.0
+                and own.fuel_percentage <= RETURN_FUEL_THRESHOLD_PCT
+            )
+            ammunition_low = (
+                own.is_aircraft
+                and own.has_strike_weapon_system
+                and own.strike_weapon_count <= 0
+            )
+            current_attack_target_id = (
+                self.engagement_state.attack_target_for(own.command_id)
+            )
+            current_attack_target = next(
+                (
+                    target
+                    for target in targets
+                    if current_attack_target_id
+                    and self.engagement_state.same_target(
+                        current_attack_target_id,
+                        target.command_id,
+                        target.entity_id,
+                    )
+                ),
+                None,
+            )
+            currently_attacking = current_attack_target_id is not None
+            attack_target_missing_frames = (
+                self.engagement_state.target_missing_frames(
+                    own.command_id, current_attack_target_id
+                )
+                if current_attack_target_id is not None
+                else 0
+            )
+            target_loss_within_grace = (
+                attack_target_missing_frames
+                < self.engagement_state.target_contact_loss_grace_frames
+            )
+            lifecycle_facts = {
+                "is_aircraft": own.is_aircraft,
+                "is_airborne": own.is_airborne,
+                "is_parked": own.is_parked,
+                "takeoff_pending": self.engagement_state.takeoff_pending(
+                    own.command_id
+                ),
+                "return_pending": self.engagement_state.return_pending(
+                    own.command_id
+                ),
+                "fuel_percentage": own.fuel_percentage,
+                "fuel_low": fuel_low,
+                "has_strike_weapon_system": (
+                    own.has_strike_weapon_system
+                ),
+                "strike_weapon_count": own.strike_weapon_count,
+                "ammunition_low": ammunition_low,
+                "currently_attacking": currently_attacking,
+                "current_attack_target_id": current_attack_target_id,
+                "attack_conditions_valid": (
+                    currently_attacking
+                    and (
+                        current_attack_target is not None
+                        or target_loss_within_grace
+                    )
+                    and (
+                        current_attack_target is None
+                        or current_attack_target.is_contact
+                        or current_attack_target.health_pct > 0.0
+                    )
+                    and own.commandable
+                    and own.communication_ok
+                    and not own.radar_jammed
+                    and not fuel_low
+                ),
+                "attack_target_missing_frames": (
+                    attack_target_missing_frames
+                ),
+                "attack_target_loss_grace_frames": (
+                    self.engagement_state.target_contact_loss_grace_frames
+                ),
+            }
             incoming = self._find_incoming_missile(own, targets)
             patrol = self._patrol_context(own)
             if incoming is not None:
@@ -182,8 +282,11 @@ class SymbolicReasoningEnv:
                     patrol_route_lats=patrol.route_lats,
                     patrol_altitude_level=patrol.altitude_level,
                     waypoint_velocity_level=3,
+                    radar_available=own.has_radar_sensor,
+                    sonar_available=own.has_sonar_sensor,
                     altitude_above_sea_m=own.altitude_m,
                     sonobuoy_count=own.sonobuoy_count,
+                    **lifecycle_facts
                 )
                 continue
 
@@ -210,8 +313,11 @@ class SymbolicReasoningEnv:
                     patrol_route_lats=patrol.route_lats,
                     patrol_altitude_level=patrol.altitude_level,
                     waypoint_velocity_level=3,
+                    radar_available=own.has_radar_sensor,
+                    sonar_available=own.has_sonar_sensor,
                     altitude_above_sea_m=own.altitude_m,
                     sonobuoy_count=own.sonobuoy_count,
+                    **lifecycle_facts
                 )
                 continue
 
@@ -224,6 +330,22 @@ class SymbolicReasoningEnv:
                     DEFAULT_ATTACK_QUANTITY,
                     max(1, 4 - evaluation.interceptors_launched),
                 )
+            preflight_eligible = (
+                evaluation.attack_request_allowed
+                and not currently_attacking
+                and not (
+                    own.is_aircraft
+                    and own.is_airborne
+                    and (fuel_low or ammunition_low)
+                )
+                and not (own.is_aircraft and own.is_parked)
+            )
+            fire_control_facts = self._fire_control_facts(
+                own=own,
+                target=target,
+                attack_quantity=attack_quantity,
+                eligible=preflight_eligible,
+            )
 
             facts = ReasoningFacts(
                 entity_id=own.command_id,
@@ -257,6 +379,7 @@ class SymbolicReasoningEnv:
                 interceptors_launched=evaluation.interceptors_launched,
                 attack_quantity=attack_quantity,
                 target_evaluation=evaluation,
+                **fire_control_facts,
                 target_lon=target.longitude,
                 target_lat=target.latitude,
                 attack_altitude_level=self._attack_altitude_level(own, target),
@@ -268,8 +391,11 @@ class SymbolicReasoningEnv:
                 patrol_route_lats=patrol.route_lats,
                 patrol_altitude_level=patrol.altitude_level,
                 waypoint_velocity_level=3,
+                radar_available=own.has_radar_sensor,
+                sonar_available=own.has_sonar_sensor,
                 altitude_above_sea_m=own.altitude_m,
                 sonobuoy_count=own.sonobuoy_count,
+                **lifecycle_facts
             )
             facts_by_entity[own.command_id] = facts
 
@@ -294,44 +420,71 @@ class SymbolicReasoningEnv:
     ) -> Optional[Tuple[EncodedEntity, TargetEvaluation]]:
         """射程内合法目标优先；仅飞机可在没有射程内目标时选超距目标。"""
 
-        immediate: List[Tuple[EncodedEntity, TargetEvaluation]] = []
-        pursuit: List[Tuple[EncodedEntity, TargetEvaluation]] = []
-        diagnostic: List[Tuple[EncodedEntity, TargetEvaluation]] = []
-        for target in targets:
-            if target.domain is TargetDomain.UNKNOWN:
-                continue
-            evaluation = self._evaluate_target(
-                own,
-                target,
-                planned_attackers,
-                planned_interceptors,
-            )
-            evaluated = (target, evaluation)
-            diagnostic.append(evaluated)
-            if evaluation.immediate_candidate:
-                immediate.append(evaluated)
-            elif evaluation.pursuit_candidate:
-                pursuit.append(evaluated)
+        priority_intercept: Optional[
+            Tuple[EncodedEntity, TargetEvaluation]
+        ] = None
+        immediate: Optional[Tuple[EncodedEntity, TargetEvaluation]] = None
+        pursuit: Optional[Tuple[EncodedEntity, TargetEvaluation]] = None
+        diagnostic: Optional[Tuple[EncodedEntity, TargetEvaluation]] = None
 
-        key = lambda item: (item[1].distance_km, item[1].target_id)
-        priority_intercepts = [
-            item
-            for item in immediate
-            if item[1].target_is_missile
-            and item[1].distance_km <= self.missile_intercept_distance_km
-        ]
-        if priority_intercepts:
+        def nearer(
+            current: Optional[Tuple[EncodedEntity, TargetEvaluation]],
+            candidate: Tuple[EncodedEntity, TargetEvaluation],
+        ) -> Tuple[EncodedEntity, TargetEvaluation]:
+            if current is None:
+                return candidate
+            current_key = (
+                current[1].distance_km,
+                current[1].target_id,
+            )
+            candidate_key = (
+                candidate[1].distance_km,
+                candidate[1].target_id,
+            )
+            return candidate if candidate_key < current_key else current
+
+        previous_geometry_cache = self._geometry_cache
+        self._geometry_cache = self._batch_target_geometry(own, targets)
+        try:
+            for target in targets:
+                if target.domain is TargetDomain.UNKNOWN:
+                    continue
+                evaluation = self._evaluate_target(
+                    own,
+                    target,
+                    planned_attackers,
+                    planned_interceptors,
+                )
+                evaluated = (target, evaluation)
+                diagnostic = nearer(diagnostic, evaluated)
+                selection_kind = evaluation.selection_kind
+                if selection_kind == 2:
+                    immediate = nearer(immediate, evaluated)
+                    if (
+                        evaluation.target_is_missile
+                        and evaluation.distance_km
+                        <= self.missile_intercept_distance_km
+                    ):
+                        priority_intercept = nearer(
+                            priority_intercept, evaluated
+                        )
+                elif selection_kind == 1:
+                    pursuit = nearer(pursuit, evaluated)
+        finally:
+            self._geometry_cache = previous_geometry_cache
+
+        if priority_intercept is not None:
             # 5 km 只负责紧急规避；防空平台在更远距离就优先选择导弹，
             # 避免先攻击较近舰艇而把拦截拖到末段。
-            return min(priority_intercepts, key=key)
-        if immediate:
-            return min(immediate, key=key)
-        if pursuit:
-            return min(pursuit, key=key)
-        if diagnostic:
+            return priority_intercept
+        if immediate is not None:
+            return immediate
+        if pursuit is not None:
+            return pursuit
+        if diagnostic is not None:
             # 没有合法候选时保留最近目标，以便规则路径明确说明被射程、
             # 弹药、并发或拦截数量中的哪一项拒绝。
-            return min(diagnostic, key=key)
+            return diagnostic
         return None
 
     def _evaluate_target(
@@ -344,30 +497,35 @@ class SymbolicReasoningEnv:
         """一次性计算目标选择、预留和最终规则共同需要的约束。"""
 
         target_id = target.command_id
-        distance_km = own.distance_to_km(target)
+        geometry = self._geometry_cache.get(id(target))
+        if geometry is None:
+            geometry = self._distance_and_bearing(own, target)
+        distance_km, target_bearing = geometry
         strike_range_km = own.strike_range_for(target)
         weapon_count = own.weapon_count_for(target)
         target_is_missile = (
             target.is_weapon and target.domain is TargetDomain.AIR
         )
-        heading_difference = self._heading_difference(own, target)
+        heading_difference = abs(
+            (own.heading_deg - target_bearing + 180.0) % 360.0 - 180.0
+        )
         aimed = (
             own.domain is TargetDomain.SURFACE
             or heading_difference < self.aim_tolerance_deg
         )
-        planned_for_target = planned_attackers.get(target_id, set())
-        active_attackers = self.engagement_state.active_attackers(target_id)
-        slot_available = self.engagement_state.slot_available(
+        planned_for_target = planned_attackers.get(target_id, ())
+        (
+            active_attackers,
+            slot_available,
+            already_attacking,
+            committed_interceptors,
+        ) = self.engagement_state.target_attack_status(
             own.command_id,
             target_id,
             planned_for_target,
         )
-        already_attacking = self.engagement_state.is_attacking(
-            own.command_id,
-            target_id,
-        )
         interceptors_launched = (
-            self.engagement_state.interceptors_launched(target_id)
+            committed_interceptors
             + planned_interceptors.get(target_id, 0)
         )
         target_type_allowed = (
@@ -408,6 +566,88 @@ class SymbolicReasoningEnv:
             already_attacking_target=already_attacking,
             interceptors_launched=interceptors_launched,
         )
+
+    def _fire_control_facts(
+        self,
+        own: EncodedEntity,
+        target: EncodedEntity,
+        attack_quantity: int,
+        eligible: bool,
+    ) -> Dict[str, Any]:
+        """把 RPC 可发射性与跨帧拒绝冷却转换为最终攻击事实。"""
+
+        quality_signature = target.contact_quality_signature
+        result: Dict[str, Any] = {
+            "fire_control_checked": False,
+            "fire_control_available": False,
+            "fire_control_cooldown": False,
+            "fire_control_reason": "",
+            "target_quality_signature": quality_signature,
+        }
+        if self.weapon_fire_prechecker is None or not eligible:
+            return result
+
+        rejection = self.engagement_state.fire_control_rejection(
+            attacker_id=own.command_id,
+            target_entity_id=target.entity_id,
+            contact_quality_signature=quality_signature,
+            current_frame=self.current_step,
+        )
+        if rejection is not None:
+            result.update(
+                fire_control_checked=True,
+                fire_control_available=False,
+                fire_control_cooldown=True,
+                fire_control_reason=rejection.reason,
+            )
+            return result
+
+        try:
+            precheck = self.weapon_fire_prechecker(
+                attacker_id=own.command_id,
+                target_id=target.command_id,
+                quantity=attack_quantity,
+                mode="manual",
+            )
+            if not isinstance(precheck, WeaponFirePrecheck):
+                raise TypeError(
+                    "weapon_fire_prechecker 必须返回 WeaponFirePrecheck"
+                )
+            if (
+                precheck.attacker_id != own.command_id
+                or precheck.target_id != target.command_id
+            ):
+                raise ValueError("武器预检结果与当前攻击方/目标不一致")
+        except Exception as error:
+            precheck = WeaponFirePrecheck(
+                can_fire=False,
+                attacker_id=own.command_id,
+                target_id=target.command_id,
+                reason="武器预检异常：{}".format(error),
+                reason_key="PRECHECK_ERROR:{}".format(
+                    type(error).__name__
+                ),
+            )
+
+        result.update(
+            fire_control_checked=True,
+            fire_control_available=precheck.can_fire,
+            fire_control_reason=precheck.reason,
+        )
+        if precheck.can_fire:
+            self.engagement_state.clear_fire_control_rejection(
+                own.command_id, target.entity_id
+            )
+        else:
+            self.engagement_state.record_fire_control_rejection(
+                attacker_id=own.command_id,
+                target_entity_id=target.entity_id,
+                reason_key=precheck.reason_key,
+                reason=precheck.reason,
+                contact_quality_signature=quality_signature,
+                current_frame=self.current_step,
+            )
+        return result
 
     def _find_incoming_missile(
         self, own: EncodedEntity, targets: Sequence[EncodedEntity]
@@ -567,6 +807,26 @@ class SymbolicReasoningEnv:
                 interceptor_count=entity_facts.attack_quantity,
             )
 
+    def _record_successful_lifecycle_actions(
+        self,
+        decisions: Mapping[str, Decision],
+        execution_status: Mapping[str, str],
+        current_frame: int,
+    ) -> None:
+        for entity_id, decision in decisions.items():
+            if execution_status.get(entity_id) != "SUCCESS":
+                continue
+            if decision.conclusion is Conclusion.TAKEOFF:
+                self.engagement_state.record_takeoff_request(
+                    entity_id, current_frame
+                )
+            elif decision.conclusion is Conclusion.RETURN_TO_BASE:
+                self.engagement_state.record_return_request(
+                    entity_id, current_frame
+                )
+            elif decision.conclusion is Conclusion.CANCEL_ATTACK:
+                self.engagement_state.release_attacker(entity_id)
+
     @staticmethod
     def _enemy_ids(targets: Sequence[EncodedEntity]) -> List[str]:
         result: List[str] = []
@@ -613,6 +873,94 @@ class SymbolicReasoningEnv:
             own.longitude, own.latitude, target.longitude, target.latitude
         )
         return abs((own.heading_deg - bearing + 180.0) % 360.0 - 180.0)
+
+    @staticmethod
+    def _distance_and_bearing(
+        own: EncodedEntity, target: EncodedEntity
+    ) -> Tuple[float, float]:
+        """共享球面中间量，一次计算三维距离和目标方位。"""
+
+        radius_km = 6371.0088
+        lat1 = math.radians(own.latitude)
+        lat2 = math.radians(target.latitude)
+        delta_lat = lat2 - lat1
+        delta_lon = math.radians(target.longitude - own.longitude)
+        sin_half_lat = math.sin(delta_lat / 2.0)
+        sin_half_lon = math.sin(delta_lon / 2.0)
+        haversine = (
+            sin_half_lat * sin_half_lat
+            + math.cos(lat1)
+            * math.cos(lat2)
+            * sin_half_lon
+            * sin_half_lon
+        )
+        ground_km = 2.0 * radius_km * math.asin(
+            min(1.0, math.sqrt(max(0.0, haversine)))
+        )
+        altitude_km = (target.altitude_m - own.altitude_m) / 1000.0
+        distance_km = math.hypot(ground_km, altitude_km)
+
+        x = math.sin(delta_lon) * math.cos(lat2)
+        y = (
+            math.cos(lat1) * math.sin(lat2)
+            - math.sin(lat1) * math.cos(lat2) * math.cos(delta_lon)
+        )
+        bearing = math.degrees(math.atan2(x, y)) % 360.0
+        return distance_km, bearing
+
+    @staticmethod
+    def _batch_target_geometry(
+        own: EncodedEntity, targets: Sequence[EncodedEntity]
+    ) -> Dict[int, Tuple[float, float]]:
+        """用向量运算批量计算一个平台到全部目标的距离与方位。"""
+
+        if not targets:
+            return {}
+        target_lats = np.fromiter(
+            (target.latitude for target in targets),
+            dtype=np.float64,
+            count=len(targets),
+        )
+        target_lons = np.fromiter(
+            (target.longitude for target in targets),
+            dtype=np.float64,
+            count=len(targets),
+        )
+        target_alts = np.fromiter(
+            (target.altitude_m for target in targets),
+            dtype=np.float64,
+            count=len(targets),
+        )
+        lat1 = math.radians(own.latitude)
+        lon1 = math.radians(own.longitude)
+        lat2 = np.radians(target_lats)
+        lon2 = np.radians(target_lons)
+        delta_lat = lat2 - lat1
+        delta_lon = lon2 - lon1
+        haversine = (
+            np.sin(delta_lat / 2.0) ** 2
+            + math.cos(lat1)
+            * np.cos(lat2)
+            * np.sin(delta_lon / 2.0) ** 2
+        )
+        ground_km = 2.0 * 6371.0088 * np.arcsin(
+            np.sqrt(np.clip(haversine, 0.0, 1.0))
+        )
+        distances = np.hypot(
+            ground_km, (target_alts - own.altitude_m) / 1000.0
+        )
+        x = np.sin(delta_lon) * np.cos(lat2)
+        y = (
+            math.cos(lat1) * np.sin(lat2)
+            - math.sin(lat1) * np.cos(lat2) * np.cos(delta_lon)
+        )
+        bearings = np.degrees(np.arctan2(x, y)) % 360.0
+        return {
+            id(target): (float(distance), float(bearing))
+            for target, distance, bearing in zip(
+                targets, distances, bearings
+            )
+        }
 
     @staticmethod
     def _bearing_deg(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -841,6 +1189,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--target-loss-grace-frames",
+        type=int,
+        default=TARGET_CONTACT_LOSS_GRACE_FRAMES,
+        help="攻击目标连续丢失多少帧后才取消；默认 3 帧",
+    )
+    parser.add_argument(
+        "--fire-rejection-cooldown-frames",
+        type=int,
+        default=FIRE_CONTROL_REJECTION_COOLDOWN_FRAMES,
+        help="相同攻击方、目标、Contact质量和拒绝原因的重试冷却；默认 10 帧",
+    )
+    parser.add_argument(
         "--attack-rpc-target",
         default=DEFAULT_ATTACK_RPC_TARGET,
         help=(
@@ -896,14 +1256,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
     # 本地文件可覆盖同 missionId 的 RPC 数据，便于离线复现和人工校正。
     mission_areas.update(_load_mission_areas(args.mission_areas))
+    engagement_state = EngagementState(
+        target_contact_loss_grace_frames=args.target_loss_grace_frames,
+        fire_control_rejection_cooldown_frames=(
+            args.fire_rejection_cooldown_frames
+        ),
+    )
+    weapon_fire_prechecker = (
+        functools.partial(
+            precheck_weapon_fire,
+            rpc_target=args.attack_rpc_target,
+            timeout=args.rpc_timeout,
+            logger=logger,
+            stub=live_source.stub,
+        )
+        if live_source is not None
+        else None
+    )
     env = SymbolicReasoningEnv(
         mission_areas=mission_areas,
         missile_intercept_distance_km=args.missile_intercept_distance_km,
+        engagement_state=engagement_state,
+        weapon_fire_prechecker=weapon_fire_prechecker,
     )
     logger.info(
-        "[规则参数] missile_intercept_priority_km=%s missile_evade_km=%s",
+        "[规则参数] missile_intercept_priority_km=%s missile_evade_km=%s "
+        "target_loss_grace_frames=%s fire_rejection_cooldown_frames=%s",
         args.missile_intercept_distance_km,
         MISSILE_EVADE_DISTANCE_KM,
+        args.target_loss_grace_frames,
+        args.fire_rejection_cooldown_frames,
     )
     action_executor = functools.partial(
         execute_actions,

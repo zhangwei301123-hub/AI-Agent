@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -55,6 +56,13 @@ FEATURE_NAMES: Tuple[str, ...] = (
     "weapon_count_land",
     "weapon_count_submarine",
     "sonobuoy_count",
+    "has_radar_sensor",
+    "has_sonar_sensor",
+    "fuel_percentage",
+    "is_airborne",
+    "is_parked",
+    "has_strike_weapon_system",
+    "strike_weapon_count",
     "communication_ok",
     "radar_jammed",
     "commandable",
@@ -73,6 +81,74 @@ def _number(value: Any, default: float = -1.0) -> float:
 def _integer(value: Any, default: int = -1) -> int:
     number = _number(value, float(default))
     return int(number) if number != float(default) else default
+
+
+def _contact_age_bucket(value: Any) -> str:
+    """把持续变化的探测秒数压缩为质量等级，避免每秒解除攻击冷却。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    digits = "".join(character for character in text if character.isdigit())
+    amount = int(digits) if digits else -1
+    if "秒" in text and amount >= 0:
+        if amount <= 2:
+            return "fresh"
+        if amount <= 10:
+            return "recent"
+        return "stale"
+    if "分" in text or "时" in text or "天" in text:
+        return "stale"
+    return text.casefold()
+
+
+def _normalize_contact_quality(value: Any) -> Any:
+    """抑制不确定区坐标的浮点噪声，只保留有意义的质量变化。"""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _normalize_contact_quality(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_normalize_contact_quality(item) for item in value]
+    if isinstance(value, float):
+        return round(value, 4)
+    return value
+
+
+def _contact_quality_signature(
+    unit: Mapping[str, Any],
+    entity_id: str,
+    contact_id: Optional[str],
+    is_contact: bool,
+) -> str:
+    """生成只随 Contact 身份或探测质量变化的稳定签名。"""
+
+    if not is_contact:
+        return ""
+    quality = {
+        "entity_id": entity_id,
+        "contact_id": contact_id or "",
+        "age_bucket": _contact_age_bucket(
+            unit.get("ContactLastDetectTimeStr")
+        ),
+        "uncertainty": _normalize_contact_quality(
+            unit.get("UncertainAreaList")
+        ),
+        "contact_type": unit.get("contactType", unit.get("ContactType")),
+        "identify_status": unit.get(
+            "IdentifyStatus", unit.get("IdentificationStatus")
+        ),
+    }
+    serialized = json.dumps(
+        quality,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:24]
 
 
 def _boolean(value: Any, default: bool = False) -> bool:
@@ -103,6 +179,88 @@ def _first_number(mapping: Mapping[str, Any], names: Sequence[str]) -> int:
         if name in mapping:
             return max(0, _integer(mapping.get(name), 0))
     return 0
+
+
+def _has_sensor_capability(
+    unit: Mapping[str, Any],
+    explicit_names: Sequence[str],
+    range_names: Sequence[str],
+) -> bool:
+    """Read an explicit capability flag, with a legacy range-list fallback."""
+
+    for name in explicit_names:
+        if name in unit:
+            return _boolean(unit.get(name))
+
+    # Historical text snapshots do not contain GetUnitData sensor inventory.
+    # A non-empty sensor range list is the only available capability hint there.
+    for name in range_names:
+        value = unit.get(name)
+        if isinstance(value, Mapping) and value:
+            return True
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            if len(value) > 0:
+                return True
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized not in ("", "[]", "{}", "null", "none"):
+                return True
+        if isinstance(value, (int, float)) and _number(value, 0.0) > 0.0:
+            return True
+    return False
+
+
+def _aircraft_operating_state(
+    unit: Mapping[str, Any],
+    is_aircraft: bool,
+    altitude_m: float,
+    speed: float,
+) -> Tuple[bool, bool]:
+    """Return ``(is_airborne, is_parked)`` without guessing unknown states."""
+
+    if not is_aircraft:
+        return False, False
+    if "isAirborne" in unit or "is_airborne" in unit:
+        airborne = _boolean(unit.get("isAirborne", unit.get("is_airborne")))
+        parked = _boolean(unit.get("isParked", unit.get("is_parked")))
+        return airborne, parked and not airborne
+
+    status = " ".join(
+        str(unit.get(name) or "")
+        for name in ("airStatus", "AirStatus", "unitStatus", "UnitStatus")
+    ).casefold()
+    parked_markers = (
+        "停放",
+        "停机",
+        "已降落",
+        "着陆",
+        "在基地",
+        "parked",
+        "on ground",
+        "grounded",
+    )
+    airborne_markers = (
+        "在空",
+        "空中",
+        "飞行",
+        "返航",
+        "airborne",
+        "in flight",
+        "on mission",
+        "returning to base",
+    )
+    if any(marker in status for marker in parked_markers):
+        return False, True
+    if any(marker in status for marker in airborne_markers):
+        return True, False
+
+    # Status text is not present in historical snapshots.  Use conservative
+    # kinematic boundaries and leave ambiguous aircraft in neither state.
+    if altitude_m > 10.0 or speed >= 30.0:
+        return True, False
+    if -5.0 <= altitude_m <= 10.0 and 0.0 <= speed <= 5.0:
+        return False, True
+    return False, False
 
 
 @dataclass(frozen=True)
@@ -144,6 +302,13 @@ class EncodedEntity:
     weapon_count_land: int
     weapon_count_submarine: int
     sonobuoy_count: int
+    has_radar_sensor: bool
+    has_sonar_sensor: bool
+    fuel_percentage: float
+    is_airborne: bool
+    is_parked: bool
+    has_strike_weapon_system: bool
+    strike_weapon_count: int
     mission_id: str
     has_patrol_mission: bool
     communication_ok: bool
@@ -151,6 +316,7 @@ class EncodedEntity:
     commandable: bool
     icon_2d: str
     vector: np.ndarray
+    contact_quality_signature: str = ""
 
     @property
     def command_id(self) -> str:
@@ -421,6 +587,54 @@ class EntityEncoder:
                 ("sonobuoyNum", "sonarBuoyNum", "buoyNum", "sonobuoyCount"),
             )
 
+        has_radar_sensor = _has_sensor_capability(
+            unit,
+            ("hasRadarSensor", "has_radar_sensor", "radarAvailable"),
+            ("rangeSensor_Air", "rangeSensor_Sea"),
+        )
+        has_sonar_sensor = _has_sensor_capability(
+            unit,
+            ("hasSonarSensor", "has_sonar_sensor", "sonarAvailable"),
+            ("rangeSensor_UnderWater",),
+        )
+        fuel_percentage = _number(
+            unit.get(
+                "fuelPercentage",
+                unit.get("fuelPct", unit.get("oil", -1.0)),
+            ),
+            -1.0,
+        )
+        is_aircraft = domain is TargetDomain.AIR and not is_weapon
+        is_airborne, is_parked = _aircraft_operating_state(
+            unit, is_aircraft, altitude_m, speed
+        )
+        explicit_strike_capability = unit.get("hasStrikeWeaponSystem")
+        if explicit_strike_capability is None:
+            has_strike_weapon_system = any(
+                (
+                    weapon_count_air > 0,
+                    weapon_count_surface > 0,
+                    weapon_count_land > 0,
+                    weapon_count_submarine > 0,
+                    range_strike_air_km > 0.0,
+                    range_strike_surface_km > 0.0,
+                    range_strike_land_km > 0.0,
+                    range_strike_submarine_km > 0.0,
+                )
+            )
+        else:
+            has_strike_weapon_system = _boolean(explicit_strike_capability)
+        strike_weapon_count = max(
+            0,
+            _integer(
+                unit.get("strikeWeaponCount"),
+                weapon_count_air
+                + weapon_count_surface
+                + weapon_count_land
+                + weapon_count_submarine,
+            ),
+        )
+
         mission_id = str(unit.get("missionId") or unit.get("MissionId") or "")
         mission_text = " ".join(
             str(unit.get(key) or "")
@@ -471,6 +685,13 @@ class EntityEncoder:
                 float(weapon_count_land),
                 float(weapon_count_submarine),
                 float(sonobuoy_count),
+                float(has_radar_sensor),
+                float(has_sonar_sensor),
+                fuel_percentage,
+                float(is_airborne),
+                float(is_parked),
+                float(has_strike_weapon_system),
+                float(strike_weapon_count),
                 float(communication_ok),
                 float(radar_jammed),
                 float(commandable),
@@ -515,6 +736,13 @@ class EntityEncoder:
             weapon_count_land=weapon_count_land,
             weapon_count_submarine=weapon_count_submarine,
             sonobuoy_count=sonobuoy_count,
+            has_radar_sensor=has_radar_sensor,
+            has_sonar_sensor=has_sonar_sensor,
+            fuel_percentage=fuel_percentage,
+            is_airborne=is_airborne,
+            is_parked=is_parked,
+            has_strike_weapon_system=has_strike_weapon_system,
+            strike_weapon_count=strike_weapon_count,
             mission_id=mission_id,
             has_patrol_mission=has_patrol_mission,
             communication_ok=communication_ok,
@@ -522,6 +750,9 @@ class EntityEncoder:
             commandable=commandable,
             icon_2d=icon_2d,
             vector=vector,
+            contact_quality_signature=_contact_quality_signature(
+                unit, entity_id, contact_id, is_contact
+            ),
         )
 
     @staticmethod

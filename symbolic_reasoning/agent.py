@@ -16,13 +16,16 @@ ACTOR_COUNT = 8
 ACTION_THRESHOLD = 0.9
 ACTION_DISABLED = 0.01
 DEFAULT_ATTACK_QUANTITY = 2
+RETURN_FUEL_THRESHOLD_PCT = 20.0
 
+TAKEOFF_ACTOR = 0
 RETURN_TO_BASE_ACTOR = 1
 WAYPOINT_ACTOR = 2
 MOBILITY_ACTOR = 3
 ATTACK_ACTOR = 4
 SENSOR_ACTOR = 5
 SONOBUOY_ACTOR = 6
+CANCEL_ATTACK_ACTOR = 7
 
 
 class Conclusion(str, Enum):
@@ -39,6 +42,8 @@ class Conclusion(str, Enum):
     DEPLOY_SONOBUOY = "DEPLOY_SONOBUOY"
     PATROL = "PATROL"
     SEARCH = "SEARCH"
+    TAKEOFF = "TAKEOFF"
+    CANCEL_ATTACK = "CANCEL_ATTACK"
     HOLD = "HOLD"
     RETURN_TO_BASE = "RETURN_TO_BASE"
 
@@ -141,24 +146,40 @@ class TargetEvaluation:
     def candidate_eligible(self) -> bool:
         """是否具备进入立即攻击/追击候选集的目标级条件。"""
 
-        return not (
-            self.range_capability_blocked
-            or self.weapon_blocked
-            or self.concurrency_blocked
-            or self.interceptor_blocked
-        )
+        return self.selection_kind >= 0
 
     @property
     def immediate_candidate(self) -> bool:
-        return self.candidate_eligible and self.within_attack_range
+        return self.selection_kind == 2
 
     @property
     def pursuit_candidate(self) -> bool:
-        return (
-            self.candidate_eligible
-            and not self.within_attack_range
-            and self.own_platform_type is TargetDomain.AIR
+        return self.selection_kind == 1
+
+    @property
+    def selection_kind(self) -> int:
+        """目标选择分类：-1=不合法，0=仅诊断，1=追击，2=立即攻击。"""
+
+        eligible = (
+            self.target_type_allowed
+            and self.max_attack_range_km > 0.0
+            and self.weapon_available
+            and self.compatible_weapon_count > 0
+            and self.concurrency_slot_available
+            and not self.already_attacking_target
+            and not (
+                self.target_is_missile
+                and self.interceptors_launched
+                >= MAX_INTERCEPTORS_PER_MISSILE
+            )
         )
+        if not eligible:
+            return -1
+        if self.within_attack_range:
+            return 2
+        if self.own_platform_type is TargetDomain.AIR:
+            return 1
+        return 0
 
     @property
     def can_chase(self) -> bool:
@@ -222,11 +243,35 @@ class ReasoningFacts:
     interceptors_launched: int = 0
     attack_quantity: int = DEFAULT_ATTACK_QUANTITY
     target_evaluation: Optional[TargetEvaluation] = None
+    fire_control_checked: bool = False
+    fire_control_available: bool = False
+    fire_control_cooldown: bool = False
+    fire_control_reason: str = ""
+    target_quality_signature: str = ""
 
     target_lon: float = 0.0
     target_lat: float = 0.0
     attack_altitude_level: int = 0
     waypoint_velocity_level: int = 4
+
+    radar_available: bool = False
+    sonar_available: bool = False
+
+    is_aircraft: bool = False
+    is_airborne: bool = False
+    is_parked: bool = False
+    takeoff_pending: bool = False
+    return_pending: bool = False
+    fuel_percentage: float = -1.0
+    fuel_low: bool = False
+    has_strike_weapon_system: bool = False
+    strike_weapon_count: int = 0
+    ammunition_low: bool = False
+    currently_attacking: bool = False
+    current_attack_target_id: Optional[str] = None
+    attack_conditions_valid: bool = False
+    attack_target_missing_frames: int = 0
+    attack_target_loss_grace_frames: int = 0
 
     is_patrol_aircraft: bool = False
     has_patrol_mission: bool = False
@@ -271,6 +316,21 @@ class ReasoningFacts:
             "chase_allowed",
             "concurrency_slot_available",
             "already_attacking_target",
+            "fire_control_checked",
+            "fire_control_available",
+            "fire_control_cooldown",
+            "radar_available",
+            "sonar_available",
+            "is_aircraft",
+            "is_airborne",
+            "is_parked",
+            "takeoff_pending",
+            "return_pending",
+            "fuel_low",
+            "has_strike_weapon_system",
+            "ammunition_low",
+            "currently_attacking",
+            "attack_conditions_valid",
             "is_patrol_aircraft",
             "has_patrol_mission",
             "inside_patrol_area",
@@ -286,6 +346,9 @@ class ReasoningFacts:
             "interceptors_launched",
             "attack_quantity",
             "sonobuoy_count",
+            "strike_weapon_count",
+            "attack_target_missing_frames",
+            "attack_target_loss_grace_frames",
         )
         for field_name in count_fields:
             value = getattr(self, field_name)
@@ -303,6 +366,7 @@ class ReasoningFacts:
             "target_lon",
             "target_lat",
             "altitude_above_sea_m",
+            "fuel_percentage",
         )
         for field_name in numeric_fields:
             value = getattr(self, field_name)
@@ -319,6 +383,16 @@ class ReasoningFacts:
             raise ValueError("waypoint_velocity_level 必须位于 [0, 4]")
         if not isinstance(self.mission_id, str):
             raise ValueError("mission_id 必须是字符串")
+        if not isinstance(self.fire_control_reason, str):
+            raise ValueError("fire_control_reason 必须是字符串")
+        if not isinstance(self.target_quality_signature, str):
+            raise ValueError("target_quality_signature 必须是字符串")
+        if self.current_attack_target_id is not None and not isinstance(
+            self.current_attack_target_id, str
+        ):
+            raise ValueError("current_attack_target_id 必须是字符串或 None")
+        if self.strike_weapon_count < 0:
+            raise ValueError("strike_weapon_count 不能小于 0")
         if len(self.patrol_route_lons) != len(self.patrol_route_lats):
             raise ValueError("巡逻航路经纬度数量必须一致")
         if self.patrol_route_lons and len(self.patrol_route_lons) < 3:
@@ -451,6 +525,148 @@ class SymbolicReasoningAgent:
                     "distance_km<=5",
                     "right_turn=90deg",
                 ),
+                facts,
+                tuple(path),
+            )
+
+        if facts.currently_attacking:
+            if record(
+                "R-CANCEL-001",
+                "正在攻击时若目标、授权、安全或后勤条件失效则放弃打击",
+                not facts.attack_conditions_valid,
+                (
+                    "currently_attacking=True",
+                    "current_attack_target_id={}".format(
+                        facts.current_attack_target_id
+                    ),
+                    "attack_conditions_valid={}".format(
+                        facts.attack_conditions_valid
+                    ),
+                    "fuel_low={}".format(facts.fuel_low),
+                    "ammunition_low={}".format(facts.ammunition_low),
+                    "target_missing_frames={}".format(
+                        facts.attack_target_missing_frames
+                    ),
+                    "target_loss_grace_frames={}".format(
+                        facts.attack_target_loss_grace_frames
+                    ),
+                ),
+            ):
+                return self._decision(
+                    Conclusion.CANCEL_ATTACK,
+                    "R-CANCEL-001",
+                    "原攻击条件已经消失，调用 cancelAttackw 放弃打击",
+                    (
+                        "currently_attacking=True",
+                        "attack_conditions_valid=False",
+                        "transient_contact_loss_debounced=True",
+                    ),
+                    facts,
+                    tuple(path),
+                )
+            record(
+                "R-CANCEL-002",
+                "攻击条件仍有效时保持当前攻击，不重复生成攻击或取消动作",
+                True,
+                (
+                    "currently_attacking=True",
+                    "attack_conditions_valid=True",
+                    "target_missing_frames={}".format(
+                        facts.attack_target_missing_frames
+                    ),
+                ),
+            )
+            return self._hold(
+                "R-CANCEL-002",
+                "当前攻击仍然有效，保持攻击且不生成冲突动作",
+                facts,
+                tuple(path),
+            )
+
+        return_required = (
+            facts.is_aircraft
+            and facts.is_airborne
+            and (facts.fuel_low or facts.ammunition_low)
+        )
+        if record(
+            "R-RTB-001",
+            "在空飞机燃油不高于 20% 或已耗尽已安装的打击武器时返航",
+            return_required and not facts.return_pending,
+            (
+                "is_aircraft={}".format(facts.is_aircraft),
+                "is_airborne={}".format(facts.is_airborne),
+                "fuel_percentage={:.3f}".format(facts.fuel_percentage),
+                "fuel_threshold_pct={:.1f}".format(
+                    RETURN_FUEL_THRESHOLD_PCT
+                ),
+                "fuel_low={}".format(facts.fuel_low),
+                "has_strike_weapon_system={}".format(
+                    facts.has_strike_weapon_system
+                ),
+                "strike_weapon_count={}".format(
+                    facts.strike_weapon_count
+                ),
+                "ammunition_low={}".format(facts.ammunition_low),
+                "return_pending={}".format(facts.return_pending),
+            ),
+        ):
+            return self._decision(
+                Conclusion.RETURN_TO_BASE,
+                "R-RTB-001",
+                "飞机后勤余量不足，调用 aircraftReturnToBasew 返航",
+                (
+                    "is_airborne=True",
+                    "fuel_low=True_or_ammunition_low=True",
+                ),
+                facts,
+                tuple(path),
+            )
+        if return_required and facts.return_pending:
+            record(
+                "R-RTB-002",
+                "已接受的返航请求在重试窗口内不重复下发",
+                True,
+                ("return_pending=True",),
+            )
+            return self._hold(
+                "R-RTB-002",
+                "返航请求已被接受，等待状态变化或重试窗口到期",
+                facts,
+                tuple(path),
+            )
+
+        takeoff_required = (
+            facts.is_aircraft and facts.is_parked and facts.attack_authorized
+        )
+        if record(
+            "R-TAKEOFF-001",
+            "健康可控且处于停放状态的飞机执行单机起飞",
+            takeoff_required and not facts.takeoff_pending,
+            (
+                "is_aircraft={}".format(facts.is_aircraft),
+                "is_parked={}".format(facts.is_parked),
+                "takeoff_pending={}".format(facts.takeoff_pending),
+                "attack_authorized={}".format(facts.attack_authorized),
+            ),
+        ):
+            return self._decision(
+                Conclusion.TAKEOFF,
+                "R-TAKEOFF-001",
+                "飞机处于停放状态，调用 aircraftTakeOffSinglew 起飞",
+                ("is_aircraft=True", "is_parked=True"),
+                facts,
+                tuple(path),
+            )
+        if takeoff_required and facts.takeoff_pending:
+            record(
+                "R-TAKEOFF-002",
+                "已接受的起飞请求在重试窗口内不重复下发",
+                True,
+                ("takeoff_pending=True",),
+            )
+            return self._hold(
+                "R-TAKEOFF-002",
+                "起飞请求已被接受，等待飞机进入在空状态",
                 facts,
                 tuple(path),
             )
@@ -654,6 +870,36 @@ class SymbolicReasoningAgent:
                     tuple(path),
                 )
 
+            fire_control_blocked = (
+                facts.fire_control_checked
+                and not facts.fire_control_available
+            )
+            if record(
+                "R-FIRE-001",
+                "最终攻击前必须通过 GetWeaponFiringInfo 可立即发射性预检",
+                fire_control_blocked,
+                (
+                    "fire_control_checked={}".format(
+                        facts.fire_control_checked
+                    ),
+                    "fire_control_available={}".format(
+                        facts.fire_control_available
+                    ),
+                    "fire_control_cooldown={}".format(
+                        facts.fire_control_cooldown
+                    ),
+                    "fire_control_reason={}".format(
+                        facts.fire_control_reason or "none"
+                    ),
+                ),
+            ):
+                return self._hold(
+                    "R-FIRE-001",
+                    "目标当前没有可立即发射武器，保持等待；冷却或Contact质量变化后重试",
+                    facts,
+                    tuple(path),
+                )
+
             if not evaluation.attack_request_allowed:
                 raise RuntimeError("TargetEvaluation 与规则推理路径不一致")
 
@@ -674,6 +920,12 @@ class SymbolicReasoningAgent:
                         facts.compatible_weapon_count
                     ),
                     "attack_quantity={}".format(facts.attack_quantity),
+                    "fire_control_checked={}".format(
+                        facts.fire_control_checked
+                    ),
+                    "fire_control_available={}".format(
+                        facts.fire_control_available
+                    ),
                 ),
             )
             return self._decision(
@@ -685,6 +937,7 @@ class SymbolicReasoningAgent:
                     "aimed_at_target=True_or_surface_ship_exempt",
                     "concurrency_slot_available=True",
                     "weapon_available=True",
+                    "fire_control_available=True_or_offline_unchecked",
                     "attack_quantity={}".format(facts.attack_quantity),
                 ),
                 facts,
@@ -774,17 +1027,46 @@ class SymbolicReasoningAgent:
                 tuple(path),
             )
 
+        search_sensor_available = (
+            facts.radar_available or facts.sonar_available
+        )
+        if not search_sensor_available:
+            record(
+                "R-SEARCH-002",
+                "未发现敌方目标，但平台没有可用于普通搜索的雷达或声呐",
+                True,
+                (
+                    "detected_target_count=0",
+                    "radar_available=False",
+                    "sonar_available=False",
+                ),
+            )
+            return self._hold(
+                "R-SEARCH-002",
+                "平台未装备雷达或声呐，不发送无效的传感器控制指令",
+                facts,
+                tuple(path),
+            )
+
         record(
             "R-SEARCH-001",
             "没有敌方目标且不满足浮标部署条件时开启传感器搜索",
             True,
-            ("detected_target_count=0",),
+            (
+                "detected_target_count=0",
+                "radar_available={}".format(facts.radar_available),
+                "sonar_available={}".format(facts.sonar_available),
+            ),
         )
         return self._decision(
             Conclusion.SEARCH,
             "R-SEARCH-001",
             "没有发现敌方目标，开启传感器搜索",
-            ("detected_target_count=0",),
+            (
+                "detected_target_count=0",
+                "radar_available={}".format(facts.radar_available),
+                "sonar_available={}".format(facts.sonar_available),
+            ),
             facts,
             tuple(path),
         )
@@ -854,6 +1136,8 @@ class SymbolicReasoningAgent:
 
     @staticmethod
     def _main_actor_index(conclusion: Conclusion) -> Optional[int]:
+        if conclusion is Conclusion.TAKEOFF:
+            return TAKEOFF_ACTOR
         if conclusion is Conclusion.EVADE_MISSILE:
             return WAYPOINT_ACTOR
         if conclusion is Conclusion.REQUEST_ATTACK:
@@ -868,6 +1152,8 @@ class SymbolicReasoningAgent:
             return SENSOR_ACTOR
         if conclusion is Conclusion.RETURN_TO_BASE:
             return RETURN_TO_BASE_ACTOR
+        if conclusion is Conclusion.CANCEL_ATTACK:
+            return CANCEL_ATTACK_ACTOR
         return None
 
     @staticmethod
@@ -972,16 +1258,39 @@ class SymbolicReasoningAgent:
                 [facts.patrol_altitude_level] * point_count,
                 [facts.waypoint_velocity_level] * point_count,
             ]
-            # 巡逻航路执行时同时打开雷达和声呐搜索。
-            actions[SENSOR_ACTOR] = [
+            if facts.radar_available or facts.sonar_available:
+                actions[SENSOR_ACTOR] = [
+                    ACTION_THRESHOLD,
+                    float(facts.radar_available),
+                    float(facts.sonar_available),
+                    0.0,
+                    None,
+                ]
+        elif conclusion is Conclusion.SEARCH:
+            if facts.radar_available or facts.sonar_available:
+                actions[SENSOR_ACTOR] = [
+                    ACTION_THRESHOLD,
+                    float(facts.radar_available),
+                    float(facts.sonar_available),
+                    0.0,
+                    None,
+                ]
+        elif conclusion is Conclusion.TAKEOFF:
+            actions[TAKEOFF_ACTOR] = [
                 ACTION_THRESHOLD,
-                1.0,
-                1.0,
-                0.0,
+                None,
+                None,
+                None,
                 None,
             ]
-        elif conclusion is Conclusion.SEARCH:
-            actions[SENSOR_ACTOR] = [ACTION_THRESHOLD, 1.0, 1.0, 0.0, None]
+        elif conclusion is Conclusion.CANCEL_ATTACK:
+            actions[CANCEL_ATTACK_ACTOR] = [
+                ACTION_THRESHOLD,
+                None,
+                None,
+                None,
+                None,
+            ]
         elif conclusion is Conclusion.RETURN_TO_BASE:
             actions[RETURN_TO_BASE_ACTOR] = [
                 ACTION_THRESHOLD,

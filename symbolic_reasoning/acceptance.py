@@ -51,6 +51,17 @@ BOOLEAN_FACT_NAMES = (
     "buoy_conditions_met",
 )
 
+LIFECYCLE_BOOLEAN_FACT_NAMES = (
+    "is_airborne",
+    "is_parked",
+    "fuel_low",
+    "ammunition_low",
+    "currently_attacking",
+    "attack_conditions_valid",
+    "takeoff_pending",
+    "return_pending",
+)
+
 WORST_CASE_MAX_ENTITIES = 700
 WORST_CASE_OWN_ENTITIES = WORST_CASE_MAX_ENTITIES // 2
 WORST_CASE_TARGET_ENTITIES = (
@@ -84,6 +95,8 @@ def _facts(**changes: Any) -> ReasoningFacts:
         "target_lon": 120.1,
         "target_lat": 30.2,
         "attack_altitude_level": 3,
+        "radar_available": True,
+        "sonar_available": True,
     }
     values.update(changes)
     return ReasoningFacts(**values)
@@ -109,6 +122,29 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
         (
             "COR-AIR-ATTACK",
             _facts(),
+            Conclusion.REQUEST_ATTACK,
+            "R-WPN-001",
+        ),
+        (
+            "COR-FIRE-CONTROL-REJECTED",
+            _facts(
+                fire_control_checked=True,
+                fire_control_available=False,
+                fire_control_cooldown=True,
+                fire_control_reason=(
+                    "cross-range ambiguity 不满足武器要求"
+                ),
+            ),
+            Conclusion.HOLD,
+            "R-FIRE-001",
+        ),
+        (
+            "COR-FIRE-CONTROL-ALLOWED",
+            _facts(
+                fire_control_checked=True,
+                fire_control_available=True,
+                fire_control_reason="can_fire=true",
+            ),
             Conclusion.REQUEST_ATTACK,
             "R-WPN-001",
         ),
@@ -280,6 +316,121 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
             Conclusion.SEARCH,
             "R-SEARCH-001",
         ),
+        (
+            "COR-SEARCH-NO-SENSOR",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                radar_available=False,
+                sonar_available=False,
+            ),
+            Conclusion.HOLD,
+            "R-SEARCH-002",
+        ),
+        (
+            "COR-TAKEOFF",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                is_aircraft=True,
+                is_parked=True,
+            ),
+            Conclusion.TAKEOFF,
+            "R-TAKEOFF-001",
+        ),
+        (
+            "COR-TAKEOFF-PENDING",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                is_aircraft=True,
+                is_parked=True,
+                takeoff_pending=True,
+            ),
+            Conclusion.HOLD,
+            "R-TAKEOFF-002",
+        ),
+        (
+            "COR-RTB-FUEL-20",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                is_aircraft=True,
+                is_airborne=True,
+                fuel_percentage=20.0,
+                fuel_low=True,
+            ),
+            Conclusion.RETURN_TO_BASE,
+            "R-RTB-001",
+        ),
+        (
+            "COR-RTB-AMMUNITION-DEPLETED",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                is_aircraft=True,
+                is_airborne=True,
+                fuel_percentage=80.0,
+                has_strike_weapon_system=True,
+                strike_weapon_count=0,
+                ammunition_low=True,
+            ),
+            Conclusion.RETURN_TO_BASE,
+            "R-RTB-001",
+        ),
+        (
+            "COR-RTB-PENDING",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                is_aircraft=True,
+                is_airborne=True,
+                fuel_percentage=10.0,
+                fuel_low=True,
+                return_pending=True,
+            ),
+            Conclusion.HOLD,
+            "R-RTB-002",
+        ),
+        (
+            "COR-NONCOMBAT-AIRCRAFT-NO-AMMO",
+            _facts(
+                target_id=None,
+                detected_target_count=0,
+                is_aircraft=True,
+                is_airborne=True,
+                fuel_percentage=80.0,
+                has_strike_weapon_system=False,
+                strike_weapon_count=0,
+                ammunition_low=False,
+            ),
+            Conclusion.SEARCH,
+            "R-SEARCH-001",
+        ),
+        (
+            "COR-CANCEL-ATTACK",
+            _facts(
+                currently_attacking=True,
+                current_attack_target_id="enemy-aircraft-0001",
+                attack_conditions_valid=False,
+                attack_target_missing_frames=3,
+                attack_target_loss_grace_frames=3,
+            ),
+            Conclusion.CANCEL_ATTACK,
+            "R-CANCEL-001",
+        ),
+        (
+            "COR-KEEP-VALID-ATTACK",
+            _facts(
+                currently_attacking=True,
+                current_attack_target_id="enemy-aircraft-0001",
+                attack_conditions_valid=True,
+                attack_target_missing_frames=2,
+                attack_target_loss_grace_frames=3,
+            ),
+            Conclusion.HOLD,
+            "R-CANCEL-002",
+        ),
     )
 
 
@@ -363,6 +514,8 @@ def _all_fact_combinations() -> Iterable[ReasoningFacts]:
             own_platform_type=(
                 TargetDomain.AIR if is_aircraft else TargetDomain.SURFACE
             ),
+            is_aircraft=is_aircraft,
+            is_airborne=is_aircraft,
             target_id="enemy-missile-1" if has_target else None,
             detected_target_count=1 if has_target else 0,
             incoming_missile=flags["incoming_missile"],
@@ -394,6 +547,36 @@ def _all_fact_combinations() -> Iterable[ReasoningFacts]:
         )
 
 
+def _all_lifecycle_combinations() -> Iterable[ReasoningFacts]:
+    """穷举起飞、返航和取消攻击相关的 8 个布尔事实。"""
+
+    for values in itertools.product(
+        (False, True), repeat=len(LIFECYCLE_BOOLEAN_FACT_NAMES)
+    ):
+        flags = dict(zip(LIFECYCLE_BOOLEAN_FACT_NAMES, values))
+        yield _facts(
+            target_id=None,
+            detected_target_count=0,
+            is_aircraft=True,
+            is_airborne=flags["is_airborne"],
+            is_parked=flags["is_parked"],
+            fuel_percentage=10.0 if flags["fuel_low"] else 80.0,
+            fuel_low=flags["fuel_low"],
+            has_strike_weapon_system=flags["ammunition_low"],
+            strike_weapon_count=0 if flags["ammunition_low"] else 2,
+            ammunition_low=flags["ammunition_low"],
+            currently_attacking=flags["currently_attacking"],
+            current_attack_target_id=(
+                "enemy-aircraft-0001"
+                if flags["currently_attacking"]
+                else None
+            ),
+            attack_conditions_valid=flags["attack_conditions_valid"],
+            takeoff_pending=flags["takeoff_pending"],
+            return_pending=flags["return_pending"],
+        )
+
+
 def test_coverage(agent: SymbolicReasoningAgent) -> Dict[str, Any]:
     total = 0
     invalid = 0
@@ -412,6 +595,21 @@ def test_coverage(agent: SymbolicReasoningAgent) -> Dict[str, Any]:
         fired_rules.add(decision.rule_id)
         conclusion_counts[decision.conclusion.value] += 1
 
+    lifecycle_total = 0
+    lifecycle_invalid = 0
+    for facts in _all_lifecycle_combinations():
+        lifecycle_total += 1
+        try:
+            decision = agent.reason(facts)
+        except Exception:
+            lifecycle_invalid += 1
+            continue
+        if not _valid_decision(decision):
+            lifecycle_invalid += 1
+            continue
+        fired_rules.add(decision.rule_id)
+        conclusion_counts[decision.conclusion.value] += 1
+
     possible = 2 ** len(BOOLEAN_FACT_NAMES)
     correctness_fired_rules = {
         agent.reason(case_facts).rule_id
@@ -421,12 +619,24 @@ def test_coverage(agent: SymbolicReasoningAgent) -> Dict[str, Any]:
         fired_rules | correctness_fired_rules
     )
     return {
-        "passed": total == possible and invalid == 0 and all_rules_covered,
+        "passed": (
+            total == possible
+            and invalid == 0
+            and lifecycle_total == 2 ** len(LIFECYCLE_BOOLEAN_FACT_NAMES)
+            and lifecycle_invalid == 0
+            and all_rules_covered
+        ),
         "fact_axes": len(BOOLEAN_FACT_NAMES),
         "possible_combinations": possible,
         "tested_combinations": total,
         "valid_conclusions": total - invalid,
         "invalid_conclusions": invalid,
+        "lifecycle_fact_axes": len(LIFECYCLE_BOOLEAN_FACT_NAMES),
+        "lifecycle_possible_combinations": (
+            2 ** len(LIFECYCLE_BOOLEAN_FACT_NAMES)
+        ),
+        "lifecycle_tested_combinations": lifecycle_total,
+        "lifecycle_invalid_conclusions": lifecycle_invalid,
         "fired_rules": sorted(fired_rules),
         "correctness_rule_count": len(RULE_IDS),
         "all_decisive_rules_covered": all_rules_covered,
@@ -445,6 +655,13 @@ def test_explainability(agent: SymbolicReasoningAgent) -> Dict[str, Any]:
             explainable += 1
         elif len(failures) < 20:
             failures.append(index)
+    for facts in _all_lifecycle_combinations():
+        total += 1
+        decision = agent.reason(facts)
+        if _valid_explanation(decision):
+            explainable += 1
+        elif len(failures) < 20:
+            failures.append(total)
     return {
         "passed": explainable == total,
         "total": total,
