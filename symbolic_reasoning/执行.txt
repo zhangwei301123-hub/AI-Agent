@@ -1,0 +1,4 @@
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --live `
+  --steps 0 `
+  --attack-rpc-target 10.2.0.106:50051
