@@ -1057,7 +1057,28 @@ class SymbolicReasoningEnv:
         return inside
 
 def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
-    """完整推理路径只写 DEBUG，避免正常未命中结果淹没操作日志。"""
+    """成功攻击写简要解释；DEBUG 也只列命中的规则。"""
+
+    info = getattr(logger, "info", None)
+    if info is not None:
+        for entity_id, decision in result.decisions.items():
+            status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
+            if (
+                decision.conclusion is not Conclusion.REQUEST_ATTACK
+                or status != "SUCCESS"
+            ):
+                continue
+            matched_rule_ids = []
+            for step in decision.inference_path:
+                if step.matched and step.rule_id not in matched_rule_ids:
+                    matched_rule_ids.append(step.rule_id)
+            info(
+                "[攻击推理] attacker_id=%s target_id=%s 规则=%s 依据=%s",
+                entity_id,
+                decision.target_id,
+                " -> ".join(matched_rule_ids),
+                "，".join(decision.matched_facts),
+            )
 
     debug = getattr(logger, "debug", None)
     if debug is None:
@@ -1075,15 +1096,38 @@ def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
     )
     entities = {entity.command_id: entity for entity in result.situation.entities}
     for entity_id, decision in result.decisions.items():
+        # SEARCH 只控制传感器，不输出其开启或关闭的推理日志。
+        if decision.conclusion is Conclusion.SEARCH:
+            continue
         entity = entities.get(entity_id)
         name = entity.name if entity is not None else entity_id
         status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
+        matched_steps = tuple(
+            step for step in decision.inference_path if step.matched
+        )
+        matched_lines = ["推理路径："]
+        for index, step in enumerate(matched_steps, 1):
+            matched_lines.append(
+                "{}. {} [命中] {}；事实：{}".format(
+                    index,
+                    step.rule_id,
+                    step.rule,
+                    "，".join(step.evidence),
+                )
+            )
+        matched_lines.append(
+            "结论：{}；决定规则：{}；依据：{}".format(
+                decision.conclusion.value,
+                decision.rule_id,
+                "，".join(decision.matched_facts),
+            )
+        )
         debug(
             "  {} -> {} | execution={}\n{}".format(
                 name,
                 decision.conclusion.value,
                 status,
-                decision.explanation,
+                "\n".join(matched_lines),
             )
         )
 
@@ -1259,7 +1303,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--verbose-reasoning",
         action="store_true",
-        help="显示逐实体完整推理路径和未命中依据；默认只显示成功操作和告警",
+        help="显示逐实体命中规则和依据；未命中规则及传感器状态不输出",
     )
     args = parser.parse_args(argv)
 

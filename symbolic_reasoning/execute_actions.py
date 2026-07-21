@@ -128,6 +128,10 @@ def _log_positive_action(
 ) -> None:
     """只把已经被 RPC 接受的实际动作输出为 INFO。"""
 
+    # 传感器是后台状态控制，不属于现场需要展示的正向操作。
+    if actor_index == 5:
+        return
+
     key = (entity_id, actor_index)
     signature = repr(list(action[1:]))
     # 状态型命令连续多帧完全相同时只显示一次；浮标是消耗型动作，每次都显示。
@@ -151,12 +155,6 @@ def _log_positive_action(
     elif actor_index == 3:
         text = "调整速度/高度 velocity_level={} altitude_level={}".format(
             action[1], action[2]
-        )
-    elif actor_index == 5:
-        text = "设置传感器 radar={} sonar={} ecm={}".format(
-            "开" if float(action[1]) > 0.5 else "关",
-            "开" if float(action[2]) > 0.5 else "关",
-            "开" if float(action[3]) > 0.5 else "关",
         )
     elif actor_index == 6:
         text = "部署声纳浮标"
@@ -805,17 +803,18 @@ def _execute_symbolic_rpc_actions(
                             getattr(response, "code", None),
                             getattr(response, "error_message", ""),
                         )
-                        _warn_action_failure_once(
-                            logger,
-                            entity_id,
-                            actor_index,
-                            reason,
-                            "[动作执行] entity=%s actor=%s RPC拒绝 code=%s error=%s",
-                            entity_id,
-                            actor_index,
-                            getattr(response, "code", None),
-                            getattr(response, "error_message", ""),
-                        )
+                        if actor_index != 5:
+                            _warn_action_failure_once(
+                                logger,
+                                entity_id,
+                                actor_index,
+                                reason,
+                                "[动作执行] entity=%s actor=%s RPC拒绝 code=%s error=%s",
+                                entity_id,
+                                actor_index,
+                                getattr(response, "code", None),
+                                getattr(response, "error_message", ""),
+                            )
 
                     # 维持原 execute 接口的互斥语义。
                     if actor_index == 0 and success:
@@ -825,16 +824,17 @@ def _execute_symbolic_rpc_actions(
                 except Exception as error:
                     result.append(False)
                     reason = "{}:{}".format(type(error).__name__, error)
-                    _warn_action_failure_once(
-                        logger,
-                        entity_id,
-                        actor_index,
-                        reason,
-                        "[动作执行] entity=%s actor=%s RPC异常=%s",
-                        entity_id,
-                        actor_index,
-                        error,
-                    )
+                    if actor_index != 5:
+                        _warn_action_failure_once(
+                            logger,
+                            entity_id,
+                            actor_index,
+                            reason,
+                            "[动作执行] entity=%s actor=%s RPC异常=%s",
+                            entity_id,
+                            actor_index,
+                            error,
+                        )
             while len(result) < ACTOR_COUNT:
                 result.append(False)
             execute_results[entity_id] = result

@@ -114,6 +114,7 @@ class LoggingPolicyTests(unittest.TestCase):
         self.assertEqual(logger.info_messages, [])
         self.assertEqual(logger.warning_messages, [])
         self.assertTrue(any("推理路径" in item for item in logger.debug_messages))
+        self.assertFalse(any("未命中" in item for item in logger.debug_messages))
 
     def test_ui_state_transition_remains_info(self):
         logger = CapturingLogger()
@@ -158,7 +159,7 @@ class LoggingPolicyTests(unittest.TestCase):
         self.assertIn("[武器发射] 成功", logger.info_messages[0])
         self.assertEqual(logger.warning_messages, [])
 
-    def test_successful_sensor_switch_is_info(self):
+    def test_successful_sensor_switch_has_no_log(self):
         logger = CapturingLogger()
         actions = [[0.01, None, None, None, None] for _ in range(8)]
         actions[5] = [0.9, 1.0, 0.0, 0.0, None]
@@ -171,8 +172,7 @@ class LoggingPolicyTests(unittest.TestCase):
             stub=SensorStub(),
         )
 
-        self.assertEqual(len(logger.info_messages), 1)
-        self.assertIn("设置传感器 radar=开 sonar=关", logger.info_messages[0])
+        self.assertEqual(logger.info_messages, [])
         self.assertEqual(logger.warning_messages, [])
 
     def test_repeated_rpc_error_warns_only_once(self):
