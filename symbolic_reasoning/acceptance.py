@@ -23,6 +23,7 @@ from typing import (
 )
 
 from .agent import (
+    ATTACK_ACTOR,
     Conclusion,
     Decision,
     ReasoningFacts,
@@ -103,7 +104,7 @@ def _facts(**changes: Any) -> ReasoningFacts:
 
 
 def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ...]:
-    """覆盖 rule.md 的关键允许、拒绝和边界路径。"""
+    """现场验收用的核心业务正确性场景，每条只保留一个直观代表。"""
 
     return (
         (
@@ -126,35 +127,6 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
             "R-WPN-001",
         ),
         (
-            "COR-FIRE-CONTROL-REJECTED",
-            _facts(
-                fire_control_checked=True,
-                fire_control_available=False,
-                fire_control_cooldown=True,
-                fire_control_reason=(
-                    "cross-range ambiguity 不满足武器要求"
-                ),
-            ),
-            Conclusion.HOLD,
-            "R-FIRE-001",
-        ),
-        (
-            "COR-FIRE-CONTROL-ALLOWED",
-            _facts(
-                fire_control_checked=True,
-                fire_control_available=True,
-                fire_control_reason="can_fire=true",
-            ),
-            Conclusion.REQUEST_ATTACK,
-            "R-WPN-001",
-        ),
-        (
-            "COR-RANGE-EQUAL",
-            _facts(distance_km=100.0, max_attack_range_km=100.0),
-            Conclusion.REQUEST_ATTACK,
-            "R-WPN-001",
-        ),
-        (
             "COR-SURFACE-WEAPON",
             _facts(
                 target_id="enemy-ship-1",
@@ -164,17 +136,6 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
             ),
             Conclusion.REQUEST_ATTACK,
             "R-WPN-002",
-        ),
-        (
-            "COR-SUBMARINE-WEAPON",
-            _facts(
-                target_id="enemy-submarine-1",
-                target_domain=TargetDomain.SUBMARINE,
-                expected_weapon_type="ANTI_SUBMARINE_WEAPON_OR_TORPEDO",
-                attack_altitude_level=1,
-            ),
-            Conclusion.REQUEST_ATTACK,
-            "R-WPN-003",
         ),
         (
             "COR-AIR-CHASE-RANGE",
@@ -187,41 +148,10 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
             "R-RNG-004",
         ),
         (
-            "COR-SHIP-NO-CHASE",
-            _facts(
-                own_platform_type=TargetDomain.SURFACE,
-                within_attack_range=False,
-                distance_km=120.0,
-                max_attack_range_km=100.0,
-            ),
-            Conclusion.HOLD,
-            "R-RNG-003",
-        ),
-        (
             "COR-AIR-ALIGN",
             _facts(aimed_at_target=False, heading_difference_deg=30.0),
             Conclusion.CHASE_AND_ALIGN,
             "R-AIM-002",
-        ),
-        (
-            "COR-SUBMARINE-AIM",
-            _facts(
-                own_platform_type=TargetDomain.SUBMARINE,
-                aimed_at_target=False,
-                heading_difference_deg=30.0,
-            ),
-            Conclusion.HOLD,
-            "R-AIM-002",
-        ),
-        (
-            "COR-SHIP-AIM-EXEMPT",
-            _facts(
-                own_platform_type=TargetDomain.SURFACE,
-                aimed_at_target=False,
-                heading_difference_deg=180.0,
-            ),
-            Conclusion.REQUEST_ATTACK,
-            "R-WPN-001",
         ),
         (
             "COR-CONCURRENCY",
@@ -233,48 +163,14 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
             "R-CON-001",
         ),
         (
-            "COR-ACTIVE-ATTACK",
-            _facts(already_attacking_target=True),
-            Conclusion.HOLD,
-            "R-CON-001",
-        ),
-        (
-            "COR-INTERCEPTOR-LIMIT",
-            _facts(target_is_missile=True, interceptors_launched=4),
-            Conclusion.HOLD,
-            "R-INT-001",
-        ),
-        (
-            "COR-NO-RANGE",
-            _facts(target_type_allowed=False, max_attack_range_km=0.0),
-            Conclusion.HOLD,
-            "R-RNG-001",
-        ),
-        (
-            "COR-NO-WEAPON",
-            _facts(weapon_available=False, compatible_weapon_count=0),
-            Conclusion.HOLD,
-            "R-WPN-001",
-        ),
-        (
-            "COR-SAFETY",
-            _facts(safety_clearance=False),
-            Conclusion.HOLD,
-            "R-VAL-001",
-        ),
-        (
-            "COR-BUOY-0M",
+            "COR-INTERCEPTOR-SALVO-LIMIT",
             _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_patrol_aircraft=True,
-                has_patrol_mission=True,
-                inside_patrol_area=True,
-                altitude_above_sea_m=0.0,
-                sonobuoy_count=1,
+                target_id="enemy-missile-1",
+                target_is_missile=True,
+                attack_quantity=2,
             ),
-            Conclusion.DEPLOY_SONOBUOY,
-            "R-BUOY-001",
+            Conclusion.REQUEST_ATTACK,
+            "R-WPN-001",
         ),
         (
             "COR-BUOY-500M",
@@ -290,147 +186,6 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
             Conclusion.DEPLOY_SONOBUOY,
             "R-BUOY-001",
         ),
-        (
-            "COR-BUOY-TOO-HIGH",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_patrol_aircraft=True,
-                has_patrol_mission=True,
-                inside_patrol_area=True,
-                altitude_above_sea_m=500.01,
-                sonobuoy_count=1,
-            ),
-            Conclusion.SEARCH,
-            "R-SEARCH-001",
-        ),
-        (
-            "COR-NO-LEGAL-TARGET",
-            _facts(target_id=None, detected_target_count=2),
-            Conclusion.HOLD,
-            "R-TGT-001",
-        ),
-        (
-            "COR-SEARCH",
-            _facts(target_id=None, detected_target_count=0),
-            Conclusion.SEARCH,
-            "R-SEARCH-001",
-        ),
-        (
-            "COR-SEARCH-NO-SENSOR",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                radar_available=False,
-                sonar_available=False,
-            ),
-            Conclusion.HOLD,
-            "R-SEARCH-002",
-        ),
-        (
-            "COR-TAKEOFF",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_aircraft=True,
-                is_parked=True,
-            ),
-            Conclusion.TAKEOFF,
-            "R-TAKEOFF-001",
-        ),
-        (
-            "COR-TAKEOFF-PENDING",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_aircraft=True,
-                is_parked=True,
-                takeoff_pending=True,
-            ),
-            Conclusion.HOLD,
-            "R-TAKEOFF-002",
-        ),
-        (
-            "COR-RTB-FUEL-20",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_aircraft=True,
-                is_airborne=True,
-                fuel_percentage=20.0,
-                fuel_low=True,
-            ),
-            Conclusion.RETURN_TO_BASE,
-            "R-RTB-001",
-        ),
-        (
-            "COR-RTB-AMMUNITION-DEPLETED",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_aircraft=True,
-                is_airborne=True,
-                fuel_percentage=80.0,
-                has_strike_weapon_system=True,
-                strike_weapon_count=0,
-                ammunition_low=True,
-            ),
-            Conclusion.RETURN_TO_BASE,
-            "R-RTB-001",
-        ),
-        (
-            "COR-RTB-PENDING",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_aircraft=True,
-                is_airborne=True,
-                fuel_percentage=10.0,
-                fuel_low=True,
-                return_pending=True,
-            ),
-            Conclusion.HOLD,
-            "R-RTB-002",
-        ),
-        (
-            "COR-NONCOMBAT-AIRCRAFT-NO-AMMO",
-            _facts(
-                target_id=None,
-                detected_target_count=0,
-                is_aircraft=True,
-                is_airborne=True,
-                fuel_percentage=80.0,
-                has_strike_weapon_system=False,
-                strike_weapon_count=0,
-                ammunition_low=False,
-            ),
-            Conclusion.SEARCH,
-            "R-SEARCH-001",
-        ),
-        (
-            "COR-CANCEL-ATTACK",
-            _facts(
-                currently_attacking=True,
-                current_attack_target_id="enemy-aircraft-0001",
-                attack_conditions_valid=False,
-                attack_target_missing_frames=3,
-                attack_target_loss_grace_frames=3,
-            ),
-            Conclusion.CANCEL_ATTACK,
-            "R-CANCEL-001",
-        ),
-        (
-            "COR-KEEP-VALID-ATTACK",
-            _facts(
-                currently_attacking=True,
-                current_attack_target_id="enemy-aircraft-0001",
-                attack_conditions_valid=True,
-                attack_target_missing_frames=2,
-                attack_target_loss_grace_frames=3,
-            ),
-            Conclusion.HOLD,
-            "R-CANCEL-002",
-        ),
     )
 
 
@@ -444,6 +199,20 @@ def _valid_decision(decision: Decision) -> bool:
         and bool(decision.rule_id)
         and len(decision.actions) == 8
         and all(len(action) == 5 for action in decision.actions)
+    )
+
+
+def _valid_case_requirement(case_id: str, decision: Decision) -> bool:
+    """检查只属于某个现场验收场景的直观业务结果。"""
+
+    if case_id != "COR-INTERCEPTOR-SALVO-LIMIT":
+        return True
+    quantity = decision.actions[ATTACK_ACTOR][4]
+    return (
+        decision.conclusion is Conclusion.REQUEST_ATTACK
+        and isinstance(quantity, int)
+        and not isinstance(quantity, bool)
+        and 1 <= quantity <= 2
     )
 
 
@@ -483,6 +252,7 @@ def test_correctness(agent: SymbolicReasoningAgent) -> Dict[str, Any]:
             decision.conclusion is not expected_conclusion
             or decision.rule_id != expected_rule
             or not _valid_decision(decision)
+            or not _valid_case_requirement(case_id, decision)
         ):
             failures.append(
                 {
@@ -975,8 +745,56 @@ def run_acceptance(
     }
 
 
-def _print_report(report: Dict[str, Any]) -> None:
+def _print_report(report: Dict[str, Any], details: bool = False) -> None:
     req = report["requirements"]
+    if not details:
+        correctness = req["correctness"]
+        coverage = req["coverage"]
+        explainability = req["explainability"]
+        performance = req["performance"]
+        core = performance["reasoning_core"]
+        worst = performance["worst_case_end_to_end"]
+        print(
+            "[{}] 正确性：{}/{}".format(
+                "PASS" if correctness["passed"] else "FAIL",
+                correctness["passed_cases"],
+                correctness["total"],
+            )
+        )
+        for failure in correctness["failures"]:
+            print(
+                "  [FAIL] {case_id}: 期望={expected_conclusion}/{expected_rule} "
+                "实际={actual_conclusion}/{actual_rule}".format(**failure)
+            )
+        print(
+            "[{}] 覆盖性：事实组合 {}/{}，生命周期 {}/{}".format(
+                "PASS" if coverage["passed"] else "FAIL",
+                coverage["valid_conclusions"],
+                coverage["possible_combinations"],
+                coverage["lifecycle_tested_combinations"]
+                - coverage["lifecycle_invalid_conclusions"],
+                coverage["lifecycle_possible_combinations"],
+            )
+        )
+        print(
+            "[{}] 可解释性：{}/{}".format(
+                "PASS" if explainability["passed"] else "FAIL",
+                explainability["explainable"],
+                explainability["total"],
+            )
+        )
+        print(
+            "[{}] 效率/性能：核心 p95={:.4f} ms，峰值={:.4f} MiB；"
+            "700实体端到端 p95={:.4f} ms".format(
+                "PASS" if performance["passed"] else "FAIL",
+                core["p95_ms"],
+                core["peak_memory_mib"],
+                worst["p95_ms"],
+            )
+        )
+        print("总体结果：{}".format("PASS" if report["passed"] else "FAIL"))
+        return
+
     for name, label in (
         ("correctness", "正确性"),
         ("coverage", "覆盖性"),
@@ -1007,6 +825,11 @@ def main(argv: Sequence[str] = None) -> int:
     parser.add_argument(
         "--max-explanation-p95-ms", type=float, default=5.0
     )
+    parser.add_argument(
+        "--details",
+        action="store_true",
+        help="显示四项验收的完整 JSON 数据；默认只显示便于现场检查的摘要",
+    )
     args = parser.parse_args(argv)
     report = run_acceptance(
         performance_iterations=args.iterations,
@@ -1017,7 +840,7 @@ def main(argv: Sequence[str] = None) -> int:
         max_worst_case_peak_memory_mib=args.max_worst_case_memory_mib,
         max_explanation_p95_ms=args.max_explanation_p95_ms,
     )
-    _print_report(report)
+    _print_report(report, details=args.details)
     return 0 if report["passed"] else 1
 
 

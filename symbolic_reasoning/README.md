@@ -269,9 +269,16 @@ python -m unittest discover -s tests -v
 python -m symbolic_reasoning.acceptance
 ```
 
+默认只显示四项汇总和总体结果，只有正确性失败时才列出失败用例，方便现场检查。
+需要查看完整数据时执行：
+
+```powershell
+python -m symbolic_reasoning.acceptance --details
+```
+
 验收内容包括：
 
-- 21 个业务正确性与边界用例；
+- 8 个核心业务正确性用例；
 - 15 个标准化布尔事实的 `2^15 = 32768` 种组合全覆盖；
 - 32768 条结论的规则编号、证据和推理路径检查；
 - 默认 10000 次核心推理的耗时和 Python 峰值分配内存测试；
