@@ -7,7 +7,7 @@ import math
 import os
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 
 ACTOR_COUNT = 8
@@ -58,6 +58,10 @@ WeaponFirePrecheckBackend = Callable[..., WeaponFirePrecheck]
 # 避免持续推演时每帧刷出完整 gRPC NOT_FOUND 堆栈。
 _MISSING_CONTACT_WARNED = set()
 _LAST_SENSOR_ACTIONS: Dict[str, Tuple[bool, bool, bool]] = {}
+_ATTACK_RPC_WARNED: Set[Tuple[str, str, str, str]] = set()
+_ACTION_FAILURE_WARNED: Set[Tuple[str, int, str]] = set()
+_MISSING_ATTACK_TARGET_WARNED: Set[str] = set()
+_LAST_POSITIVE_ACTION_LOGS: Dict[Tuple[str, int], str] = {}
 
 
 class ActionValidationError(ValueError):
@@ -67,9 +71,100 @@ class ActionValidationError(ValueError):
 def _log(logger: Any, level: str, message: str, *args: Any) -> None:
     if logger is None:
         return
-    method = getattr(logger, level, None) or getattr(logger, "info", None)
+    method = getattr(logger, level, None)
+    if method is None and level in ("warning", "error", "critical"):
+        method = getattr(logger, "info", None)
     if method is not None:
         method(message, *args)
+
+
+def _warn_attack_rpc_once(
+    logger: Any,
+    phase: str,
+    attacker_id: str,
+    target_id: str,
+    reason_key: str,
+    message: str,
+) -> None:
+    key = (phase, attacker_id, target_id, reason_key)
+    level = "debug" if key in _ATTACK_RPC_WARNED else "warning"
+    _ATTACK_RPC_WARNED.add(key)
+    _log(logger, level, message)
+
+
+def _clear_attack_rpc_warning(
+    phase: str, attacker_id: str, target_id: str
+) -> None:
+    for key in tuple(_ATTACK_RPC_WARNED):
+        if key[:3] == (phase, attacker_id, target_id):
+            _ATTACK_RPC_WARNED.discard(key)
+
+
+def _warn_action_failure_once(
+    logger: Any,
+    entity_id: str,
+    actor_index: int,
+    reason: str,
+    message: str,
+    *args: Any
+) -> None:
+    key = (entity_id, actor_index, reason)
+    level = "debug" if key in _ACTION_FAILURE_WARNED else "warning"
+    _ACTION_FAILURE_WARNED.add(key)
+    _log(logger, level, message, *args)
+
+
+def _clear_action_failure(entity_id: str, actor_index: int) -> None:
+    for key in tuple(_ACTION_FAILURE_WARNED):
+        if key[:2] == (entity_id, actor_index):
+            _ACTION_FAILURE_WARNED.discard(key)
+
+
+def _log_positive_action(
+    logger: Any,
+    entity_id: str,
+    actor_index: int,
+    action: Sequence[Any],
+) -> None:
+    """只把已经被 RPC 接受的实际动作输出为 INFO。"""
+
+    key = (entity_id, actor_index)
+    signature = repr(list(action[1:]))
+    # 状态型命令连续多帧完全相同时只显示一次；浮标是消耗型动作，每次都显示。
+    if actor_index != 6 and _LAST_POSITIVE_ACTION_LOGS.get(key) == signature:
+        return
+    if actor_index != 6:
+        _LAST_POSITIVE_ACTION_LOGS[key] = signature
+
+    if actor_index == 0:
+        text = "飞机起飞"
+    elif actor_index == 1:
+        text = "飞机返航"
+    elif actor_index == 2:
+        route = action[1]
+        count = (
+            len(route)
+            if isinstance(route, Sequence) and not isinstance(route, (str, bytes))
+            else 1
+        )
+        text = "设置航路 waypoint_count={}".format(count)
+    elif actor_index == 3:
+        text = "调整速度/高度 velocity_level={} altitude_level={}".format(
+            action[1], action[2]
+        )
+    elif actor_index == 5:
+        text = "设置传感器 radar={} sonar={} ecm={}".format(
+            "开" if float(action[1]) > 0.5 else "关",
+            "开" if float(action[2]) > 0.5 else "关",
+            "开" if float(action[3]) > 0.5 else "关",
+        )
+    elif actor_index == 6:
+        text = "部署声纳浮标"
+    elif actor_index == 7:
+        text = "取消攻击"
+    else:
+        text = "执行 Actor {}".format(actor_index)
+    _log(logger, "info", "[正向操作] entity=%s %s", entity_id, text)
 
 
 def validate_actions_dict(actions_dict: Mapping[str, Sequence[Sequence[Any]]]) -> None:
@@ -308,7 +403,7 @@ def precheck_weapon_fire(
             stub = engine_pb2_grpc.SimulationServiceStub(channel)
         _log(
             logger,
-            "info",
+            "debug",
             "[攻击预检] GetWeaponFiringInfo attacker_id=%s target_id=%s rpc=%s",
             attacker_id,
             target_id,
@@ -321,6 +416,7 @@ def precheck_weapon_fire(
             ),
             timeout=float(timeout),
         )
+        _clear_attack_rpc_warning("precheck", attacker_id, target_id)
         _MISSING_CONTACT_WARNED.discard((attacker_id, target_id))
         suitable_weapons = tuple(response.suitable_weapons)
         selected, evidence = _choose_weapon(
@@ -328,7 +424,7 @@ def precheck_weapon_fire(
             preferred_weapon_name=preferred_weapon_name,
         )
         for item in evidence:
-            _log(logger, "info", "[攻击预检] 候选依据 %s", item)
+            _log(logger, "debug", "[攻击预检] 候选依据 %s", item)
         if selected is not None:
             return WeaponFirePrecheck(
                 can_fire=True,
@@ -364,13 +460,20 @@ def precheck_weapon_fire(
                 _MISSING_CONTACT_WARNED.add(warning_key)
                 _log(
                     logger,
-                    "info",
+                    "debug",
                     "[攻击预检] 跳过非红方有效Contact target_id=%s；"
                     "相同目标进入冷却",
                     target_id,
                 )
         else:
-            _log(logger, "warning", "[攻击预检] %s", reason)
+            _warn_attack_rpc_once(
+                logger,
+                "precheck",
+                attacker_id,
+                target_id,
+                _rpc_error_key(error),
+                "[攻击预检] {}".format(reason),
+            )
         return WeaponFirePrecheck(
             can_fire=False,
             attacker_id=attacker_id,
@@ -436,7 +539,8 @@ def execute_attack_pipeline(
         )
         if not precheck.can_fire or precheck.weapon_db_id is None:
             reason = precheck.reason
-            _log(logger, "warning", "[攻击流水线] 拒绝攻击：%s", reason)
+            # 武器条件不满足是正常规则结果，不属于系统告警。
+            _log(logger, "debug", "[攻击流水线] 本帧未发射：%s", reason)
             return AttackPipelineResult(
                 success=False,
                 attacker_id=attacker_id,
@@ -455,7 +559,7 @@ def execute_attack_pipeline(
         )
         _log(
             logger,
-            "info",
+            "debug",
             "[攻击流水线] 选择武器 name=%s weapon_db_id=%s "
             "requested=%s submitted=%s mode=%s",
             weapon_name,
@@ -474,11 +578,12 @@ def execute_attack_pipeline(
             ),
             timeout=float(timeout),
         )
+        _clear_attack_rpc_warning("attack", attacker_id, target_id)
         reason = "AttackTarget RPC 已接受攻击请求"
         _log(
             logger,
             "info",
-            "[攻击流水线] 执行成功 attacker_id=%s target_id=%s "
+            "[武器发射] 成功 attacker_id=%s target_id=%s "
             "weapon=%s quantity=%s",
             attacker_id,
             target_id,
@@ -505,13 +610,20 @@ def execute_attack_pipeline(
                 _MISSING_CONTACT_WARNED.add(warning_key)
                 _log(
                     logger,
-                    "info",
+                    "debug",
                     "[攻击流水线] 跳过非红方有效Contact target_id=%s；"
                     "相同目标后续不再重复提示",
                     target_id,
                 )
         else:
-            _log(logger, "warning", "[攻击流水线] %s", reason)
+            _warn_attack_rpc_once(
+                logger,
+                "attack",
+                attacker_id,
+                target_id,
+                _rpc_error_key(error),
+                "[攻击流水线] {}".format(reason),
+            )
         return AttackPipelineResult(
             success=False,
             attacker_id=attacker_id,
@@ -585,6 +697,10 @@ def _execute_symbolic_rpc_actions(
             for actor_index, action in enumerate(actions):
                 enabled = float(action[0]) >= float(probability)
                 if not enabled or actor_index == ATTACK_ACTOR:
+                    if actor_index != ATTACK_ACTOR:
+                        _LAST_POSITIVE_ACTION_LOGS.pop(
+                            (entity_id, actor_index), None
+                        )
                     result.append(False)
                     continue
 
@@ -675,15 +791,25 @@ def _execute_symbolic_rpc_actions(
                     success = _rpc_success(response)
                     result.append(success)
                     if success:
+                        _clear_action_failure(entity_id, actor_index)
                         rewards[actor_index] += 1.0
                         if actor_index == 5:
                             _LAST_SENSOR_ACTIONS[entity_id] = sensor_action
                         if actor_index == 6:
                             rewards[actor_index] -= 2.0
+                        _log_positive_action(
+                            logger, entity_id, actor_index, action
+                        )
                     else:
-                        _log(
+                        reason = "code={} error={}".format(
+                            getattr(response, "code", None),
+                            getattr(response, "error_message", ""),
+                        )
+                        _warn_action_failure_once(
                             logger,
-                            "warning",
+                            entity_id,
+                            actor_index,
+                            reason,
                             "[动作执行] entity=%s actor=%s RPC拒绝 code=%s error=%s",
                             entity_id,
                             actor_index,
@@ -698,9 +824,12 @@ def _execute_symbolic_rpc_actions(
                         actions[3][0] = 0.0
                 except Exception as error:
                     result.append(False)
-                    _log(
+                    reason = "{}:{}".format(type(error).__name__, error)
+                    _warn_action_failure_once(
                         logger,
-                        "warning",
+                        entity_id,
+                        actor_index,
+                        reason,
                         "[动作执行] entity=%s actor=%s RPC异常=%s",
                         entity_id,
                         actor_index,
@@ -785,13 +914,20 @@ def execute_actions(
             continue
         target_id = attack_action[1]
         if target_id is None or not str(target_id).strip():
+            level = (
+                "debug"
+                if entity_id in _MISSING_ATTACK_TARGET_WARNED
+                else "warning"
+            )
+            _MISSING_ATTACK_TARGET_WARNED.add(entity_id)
             _log(
                 logger,
-                "warning",
+                level,
                 "[攻击流水线] %s 的攻击动作缺少 target_id，安全拒绝",
                 entity_id,
             )
             continue
+        _MISSING_ATTACK_TARGET_WARNED.discard(entity_id)
         requests.append(
             (entity_id, str(target_id), _attack_quantity(attack_action))
         )

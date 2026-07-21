@@ -70,10 +70,12 @@ python -m symbolic_reasoning.symbolic_reasoning4test --steps 1
         → 攻击动作查询武器并调用 AttackTarget → 系统执行反馈
 ```
 
-时间口径：UI 的轮询间隔使用现实秒，`0～9` 表示 UI 的推演倍速；算法每成功
-取得一份后台态势数据计为 1 帧。规则冷却、并发槽位超时等只按数据帧累计，
-不乘 1x、5x、10x、Turbo 等时间压缩倍率。前端暂停期间不会取得下一帧，帧计数
-也不会增加。
+时间口径：UI 的轮询间隔使用现实秒，`0～9` 表示 UI 的推演倍速。算法通过
+`GetEngineStatus.time_compress` 读取当前倍率；每成功处理一份新态势，冷却时钟按
+当前倍率推进，即 `cooldown_frame += multiplier`。例如 50 倍速下，600 帧超时的
+剩余量按 `600 → 550 → 500` 递减。前端暂停期间不处理新态势，冷却时钟不推进。
+目标 Contact 连续丢失 3 帧属于探测防抖，仍按实际收到的连续态势份数计数，不乘
+倍速。Turbo 没有固定数值倍率，当前按 60 倍推进冷却时钟。
 
 > 注意：符号推理执行层保持与项目一致的 8×5 动作格式，但不再导入根目录
 > `execute.py`。两套生成代码都使用 protobuf 的 `package proto`，放在同一 Python
@@ -106,16 +108,29 @@ python -m symbolic_reasoning.symbolic_reasoning4test `
 
 ## 查看可解释性推理路径
 
-无需额外参数。程序与 `maddpg4test.py` 一样使用项目的 `logger.info(...)`，
-每一步都会输出各实体的规则编号、匹配结果、事实依据、最终结论和执行状态。
+默认采用安静日志：`INFO` 输出启动阶段的实时连接、任务加载、规则参数、UI 监听和
+UI 状态切换，以及已经被 RPC 接受的正向操作，例如打开/关闭传感器、设置航路、
+起飞、返航、部署浮标和成功提交武器发射。普通规则未命中、候选排除、武器预检
+拒绝以及重复态势不会显示为 `INFO`；相同 RPC 故障只首次显示 `WARNING`。
+
+需要执行可解释性检查时，增加 `--verbose-reasoning`：
+
+```powershell
+python -m symbolic_reasoning.symbolic_reasoning4test `
+  --live `
+  --steps 0 `
+  --verbose-reasoning
+```
+
+此时 `DEBUG` 会输出各实体的规则编号、命中/未命中结果、事实依据、最终结论和执行状态。
 日志会同时显示在控制台，并保存在：
 
 ```text
 logs/symbolic_reasoning_YYYYMMDD_HHMMSS.log
 ```
 
-使用 `--dry-run` 时执行状态为 `DRY_RUN`；不使用该参数时默认实际执行，
-日志会记录实际执行状态以及相同的完整推理路径。
+使用 `--dry-run --verbose-reasoning` 可只检查完整推理路径而不下发命令；不使用
+`--dry-run` 时默认实际执行。
 
 ## 可控性和武器能力判定
 
@@ -197,8 +212,9 @@ result = execute_attack_pipeline(
 ```
 
 `result.success` 表示 `AttackTarget` RPC 是否成功接受请求；实际是否发射、命中
-仍以后续态势中的武器实体和攻击报告为准。候选武器、库存、可发射评估、最终
-选择和请求数量均通过 `logger.info(...)` 输出，作为执行阶段的可解释依据。
+仍以后续态势中的武器实体和攻击报告为准。默认只把成功提交的发射记录为 `INFO`；
+候选武器、库存、可发射评估、最终选择和请求数量在 `--verbose-reasoning` 下作为
+`DEBUG` 可解释依据输出。
 
 ## 巡逻任务区域和坐标执行
 

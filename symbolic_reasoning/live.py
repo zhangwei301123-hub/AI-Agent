@@ -13,6 +13,7 @@ from google.protobuf.empty_pb2 import Empty
 from google.protobuf.wrappers_pb2 import StringValue
 
 from . import engine_pb2, engine_pb2_grpc
+from .control import FrontendStatus, frontend_status_from_engine
 
 
 RANGE_NM_TO_KM = 1.852
@@ -297,6 +298,7 @@ class RpcSituationSource:
         self.logger = logger
         self._red_side_guid = ""
         self._situation_user_id = int(time.time() * 1000000)
+        self._inventory_failures_warned: Dict[str, str] = {}
         self._channel = None
         if stub is None:
             import grpc
@@ -310,16 +312,11 @@ class RpcSituationSource:
             self._channel.close()
             self._channel = None
 
-    def control_signal(self) -> str:
+    def control_signal(self) -> FrontendStatus:
         status = self.stub.GetEngineStatus(
             engine_pb2.EmptyRequest(), timeout=self.timeout
         )
-        return {
-            1: "pause",
-            2: "running",
-            3: "pause",
-            4: "stop",
-        }.get(int(status.run_status), "pause")
+        return frontend_status_from_engine(status)
 
     def fetch_missions(self) -> Any:
         return self.stub.getMissionList(Empty(), timeout=self.timeout)
@@ -421,7 +418,7 @@ class RpcSituationSource:
             if bool(unit.get("IsContact")) and unit.get("contactGuid")
         ]
         self._log(
-            "info",
+            "debug",
             "[实时态势] source=GetThreeSituation(red-view) entities=%s "
             "contacts=%s red_inventory=%s",
             len(units),
@@ -468,7 +465,7 @@ class RpcSituationSource:
         ]
         report_time = max((int(unit.reportTime) for unit in units), default=0)
         self._log(
-            "info",
+            "debug",
             "[实时态势] entities=%s red_inventory=%s report_frame=%s",
             len(normalized),
             len(inventories),
@@ -512,16 +509,24 @@ class RpcSituationSource:
                 try:
                     inventory = future.result()
                 except Exception as error:
+                    reason = "{}:{}".format(type(error).__name__, error)
+                    level = (
+                        "debug"
+                        if self._inventory_failures_warned.get(unit_id) == reason
+                        else "warning"
+                    )
+                    self._inventory_failures_warned[unit_id] = reason
                     self._log(
-                        "warning",
+                        level,
                         "[实时武器] GetUnitData 失败 id=%s error=%s",
                         unit_id,
                         error,
                     )
                     continue
+                self._inventory_failures_warned.pop(unit_id, None)
                 result[unit_id] = inventory
                 self._log(
-                    "info",
+                    "debug",
                     "[实时武器] id=%s air=%s surface=%s land=%s sub=%s buoy=%s",
                     unit_id,
                     inventory.air_count,
@@ -541,4 +546,6 @@ class RpcSituationSource:
 
     def _log(self, level: str, message: str, *args: Any) -> None:
         if self.logger is not None:
-            getattr(self.logger, level)(message, *args)
+            method = getattr(self.logger, level, None)
+            if method is not None:
+                method(message, *args)

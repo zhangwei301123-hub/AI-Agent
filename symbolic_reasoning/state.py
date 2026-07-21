@@ -101,7 +101,7 @@ class EngagementState:
     def update_from_situation(
         self, situation: EncodedSituation, current_frame: int
     ) -> None:
-        """处理想定重置、600 帧超时、命中反馈和导弹目标消失。"""
+        """按倍速折算后的冷却帧处理超时、命中和目标消失。"""
 
         frame = int(current_frame)
         if frame < 0:

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Callable, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional, Union
 
 
-ControlSignalProvider = Callable[[], Optional[str]]
-
-# UI 的时间压缩编码仅用于显示和服务配置；符号推理规则始终按后台数据帧计时。
 TIME_COMPRESSION_LABELS = {
     0: "1x",
     1: "2x",
@@ -22,6 +20,56 @@ TIME_COMPRESSION_LABELS = {
     8: "60x",
     9: "Turbo",
 }
+
+# 每处理一份新态势，冷却时钟按当前时间压缩倍率推进。Turbo 没有固定数值倍率，
+# 采用协议中最大的明确倍率 60 作为确定性兜底，避免冷却完全不推进。
+TIME_COMPRESSION_MULTIPLIERS = {
+    0: 1,
+    1: 2,
+    2: 5,
+    3: 10,
+    4: 15,
+    5: 30,
+    6: 40,
+    7: 50,
+    8: 60,
+    9: 60,
+}
+
+
+@dataclass(frozen=True)
+class FrontendStatus:
+    """一次前端状态快照，包含运行状态和冷却时钟倍率。"""
+
+    signal: str
+    time_compress_code: int = 0
+    sim_step: str = ""
+
+    @property
+    def time_compression_multiplier(self) -> int:
+        return TIME_COMPRESSION_MULTIPLIERS.get(
+            int(self.time_compress_code), 1
+        )
+
+
+ControlSignal = Union[str, FrontendStatus]
+ControlSignalProvider = Callable[[], Optional[ControlSignal]]
+
+
+def frontend_status_from_engine(status: Any) -> FrontendStatus:
+    """把 GetEngineStatus 响应转换为统一的前端状态快照。"""
+
+    run_status = int(getattr(status, "run_status", 0))
+    return FrontendStatus(
+        signal={
+            1: "pause",
+            2: "running",
+            3: "pause",
+            4: "stop",
+        }.get(run_status, "pause"),
+        time_compress_code=int(getattr(status, "time_compress", 0)),
+        sim_step=str(getattr(status, "sim_step", "") or ""),
+    )
 
 
 def _load_project_signal_provider() -> ControlSignalProvider:
@@ -37,14 +85,9 @@ def _load_project_signal_provider() -> ControlSignalProvider:
     channel = grpc.insecure_channel(endpoint)
     stub = engine_pb2_grpc.SimulationServiceStub(channel)
 
-    def get_control_signal() -> str:
+    def get_control_signal() -> FrontendStatus:
         status = stub.GetEngineStatus(engine_pb2.EmptyRequest(), timeout=5.0)
-        return {
-            1: "pause",
-            2: "running",
-            3: "pause",
-            4: "stop",
-        }.get(int(status.run_status), "pause")
+        return frontend_status_from_engine(status)
 
     return get_control_signal
 
@@ -74,6 +117,9 @@ class FrontendControl:
         self._thread: Optional[threading.Thread] = None
         self._state = "waiting"
         self._should_exit = False
+        self._time_compress_code = 0
+        self._time_compression_multiplier = 1
+        self._sim_step = ""
 
     @property
     def state(self) -> str:
@@ -84,6 +130,21 @@ class FrontendControl:
     def should_exit(self) -> bool:
         with self._lock:
             return self._should_exit
+
+    @property
+    def time_compress_code(self) -> int:
+        with self._lock:
+            return self._time_compress_code
+
+    @property
+    def time_compression_multiplier(self) -> int:
+        with self._lock:
+            return self._time_compression_multiplier
+
+    @property
+    def sim_step(self) -> str:
+        with self._lock:
+            return self._sim_step
 
     def start(self) -> None:
         """启动后台轮询；收到首个运行信号前保持暂停。"""
@@ -99,10 +160,15 @@ class FrontendControl:
         )
         self._thread.start()
 
-    def handle_signal(self, signal: Optional[str]) -> None:
+    def handle_signal(self, signal: Optional[ControlSignal]) -> None:
         """处理前端状态 RPC 返回的标准化控制状态。"""
 
-        normalized = str(signal or "").strip().lower()
+        if isinstance(signal, FrontendStatus):
+            self._update_timing(signal)
+            raw_signal = signal.signal
+        else:
+            raw_signal = signal
+        normalized = str(raw_signal or "").strip().lower()
         if normalized in self.RUN_SIGNALS:
             self._transition("running", should_exit=False, runnable=True)
         elif normalized == "pause":
@@ -114,6 +180,37 @@ class FrontendControl:
             self._listener_stop.set()
         else:
             self._log("warning", "[UI控制] 未知控制信号 %r，保持当前状态", signal)
+
+    def _update_timing(self, status: FrontendStatus) -> None:
+        code = int(status.time_compress_code)
+        if code not in TIME_COMPRESSION_MULTIPLIERS:
+            self._log(
+                "warning",
+                "[UI控制] 未知时间压缩编码 %s，继续使用 %sx",
+                code,
+                self.time_compression_multiplier,
+            )
+            return
+        multiplier = TIME_COMPRESSION_MULTIPLIERS[code]
+        with self._lock:
+            previous_code = self._time_compress_code
+            previous_multiplier = self._time_compression_multiplier
+            self._time_compress_code = code
+            self._time_compression_multiplier = multiplier
+            self._sim_step = status.sim_step
+        if (
+            previous_code != code
+            or previous_multiplier != multiplier
+        ):
+            self._log(
+                "info",
+                "[UI控制] time_compress %s -> %s，冷却时钟每态势帧 +%s",
+                TIME_COMPRESSION_LABELS.get(
+                    previous_code, "code={}".format(previous_code)
+                ),
+                TIME_COMPRESSION_LABELS.get(code, "code={}".format(code)),
+                multiplier,
+            )
 
     def handle_read_error(self, error: Exception) -> None:
         """读取前端失败时采用安全关闭策略，暂停推理和命令下发。"""
@@ -176,4 +273,6 @@ class FrontendControl:
 
     def _log(self, level: str, message: str, *args: Any) -> None:
         if self.logger is not None:
-            getattr(self.logger, level)(message, *args)
+            method = getattr(self.logger, level, None)
+            if method is not None:
+                method(message, *args)

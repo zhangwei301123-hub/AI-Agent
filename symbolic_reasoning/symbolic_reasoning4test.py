@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -64,6 +65,8 @@ class SymbolicStepResult:
     execute_results: Any = None
     rewards: Any = None
     execution_status: Optional[Dict[str, str]] = None
+    cooldown_frame: int = 0
+    time_compression_multiplier: int = 1
 
 
 @dataclass(frozen=True)
@@ -116,10 +119,19 @@ class SymbolicReasoningEnv:
         execute_commands: bool = True,
         logger: Any = None,
         executor: Any = None,
+        time_compression_multiplier: int = 1,
     ) -> SymbolicStepResult:
+        if (
+            not isinstance(time_compression_multiplier, int)
+            or isinstance(time_compression_multiplier, bool)
+            or time_compression_multiplier <= 0
+        ):
+            raise ValueError("time_compression_multiplier 必须是正整数")
         situation = self.encoder.encode(payload)
-        # 后台每返回一份态势就计为一帧；UI 倍速不参与规则计时。
-        current_frame = self.current_step
+        # 冷却时钟按当前 UI 时间压缩倍率推进。例如 50 倍速时，每处理一份
+        # 新态势，600 帧剩余量减少 50；暂停期间不调用 step，因此不会推进。
+        current_frame = self.current_step + time_compression_multiplier
+        self.current_step = current_frame
         self.engagement_state.update_from_situation(situation, current_frame)
         facts = self.build_facts(situation)
 
@@ -149,7 +161,6 @@ class SymbolicReasoningEnv:
                 entity_id: "DRY_RUN" for entity_id in decisions
             }
 
-        self.current_step += 1
         return SymbolicStepResult(
             situation=situation,
             facts=facts,
@@ -158,6 +169,8 @@ class SymbolicReasoningEnv:
             execute_results=execute_results,
             rewards=rewards,
             execution_status=execution_status,
+            cooldown_frame=current_frame,
+            time_compression_multiplier=time_compression_multiplier,
         )
 
     def build_facts(
@@ -1044,11 +1057,17 @@ class SymbolicReasoningEnv:
         return inside
 
 def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
-    """通过统一 info 日志输出推理路径、事实依据和执行状态。"""
+    """完整推理路径只写 DEBUG，避免正常未命中结果淹没操作日志。"""
 
-    logger.info(
-        "step={} entities={} own={} targets={}".format(
+    debug = getattr(logger, "debug", None)
+    if debug is None:
+        return
+    debug(
+        "step={} cooldown_frame={} time_compression={}x "
+        "entities={} own={} targets={}".format(
             step_index,
+            result.cooldown_frame,
+            result.time_compression_multiplier,
             len(result.situation.entities),
             len(result.situation.own_entities),
             len(result.situation.targets),
@@ -1059,7 +1078,7 @@ def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
         entity = entities.get(entity_id)
         name = entity.name if entity is not None else entity_id
         status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
-        logger.info(
+        debug(
             "  {} -> {} | execution={}\n{}".format(
                 name,
                 decision.conclusion.value,
@@ -1091,12 +1110,15 @@ def main_loop(
     situation_provider: Optional[Callable[[], Mapping[str, Any]]] = None,
 ) -> None:
     step_index = 0
+    last_situation_error = ""
     while steps <= 0 or step_index < steps:
         if (
             frontend_control is not None
             and not frontend_control.wait_until_runnable()
         ):
-            logger.info("[UI控制] 前端停止推演，符号推理循环退出")
+            debug = getattr(logger, "debug", None)
+            if debug is not None:
+                debug("[UI控制] 前端停止推演，符号推理循环退出")
             break
 
         try:
@@ -1105,12 +1127,22 @@ def main_loop(
                 if situation_provider is not None
                 else load_situation(input_path)
             )
+            last_situation_error = ""
         except Exception as error:
             if frontend_control is None:
                 raise
             # 实时服务重启/短暂断连时不让长期运行进程退出。UI 监听会保持暂停，
             # 服务恢复并再次返回 running 后从同一逻辑帧继续。
-            logger.warning("[实时态势] 本帧读取失败，等待服务恢复: %s", error)
+            error_key = "{}:{}".format(type(error).__name__, error)
+            if error_key != last_situation_error:
+                logger.warning(
+                    "[实时态势] 读取失败，等待服务恢复: %s", error
+                )
+                last_situation_error = error_key
+            else:
+                debug = getattr(logger, "debug", None)
+                if debug is not None:
+                    debug("[实时态势] 重复读取失败: %s", error)
             time.sleep(max(0.1, interval))
             continue
 
@@ -1119,7 +1151,9 @@ def main_loop(
             frontend_control is not None
             and not frontend_control.wait_until_runnable()
         ):
-            logger.info("[UI控制] 前端停止推演，符号推理循环退出")
+            debug = getattr(logger, "debug", None)
+            if debug is not None:
+                debug("[UI控制] 前端停止推演，符号推理循环退出")
             break
 
         result = env.step(
@@ -1127,6 +1161,11 @@ def main_loop(
             execute_commands=execute_commands,
             logger=logger,
             executor=executor,
+            time_compression_multiplier=(
+                frontend_control.time_compression_multiplier
+                if frontend_control is not None
+                else 1
+            ),
         )
         log_step(result, step_index, logger)
         step_index += 1
@@ -1217,10 +1256,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="离线运行时忽略前端开始、暂停和停止信号；默认启用前端控制",
     )
+    parser.add_argument(
+        "--verbose-reasoning",
+        action="store_true",
+        help="显示逐实体完整推理路径和未命中依据；默认只显示成功操作和告警",
+    )
     args = parser.parse_args(argv)
 
     current_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    logger = Log(name=f"symbolic_reasoning_{current_time}", log_dir="logs")
+    log_level = logging.DEBUG if args.verbose_reasoning else logging.INFO
+    logger = Log(
+        name=f"symbolic_reasoning_{current_time}",
+        log_dir="logs",
+        level=log_level,
+    )
+    # Log 使用进程级单例；显式重设可以保证本入口的参数在复用时仍然生效。
+    logger.logger.setLevel(log_level)
     live_source = None
     if args.live:
         live_source = RpcSituationSource(
@@ -1320,7 +1371,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ),
         )
     except KeyboardInterrupt:
-        logger.info("符号推理循环已停止")
+        logger.debug("符号推理循环已停止")
     finally:
         # 先关闭 gRPC channel，使可能阻塞在 GetEngineStatus 的后台监听调用
         # 立即取消，再等待监听线程退出，避免 Ctrl+C 后额外等待 RPC 超时。
