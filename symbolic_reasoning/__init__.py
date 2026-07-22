@@ -1,7 +1,10 @@
 """基于确定性业务规则的符号推理智能体。"""
 
 from .agent import (
+    ASW_TORPEDO_RELEASE_DISTANCE_KM,
+    ASW_TORPEDO_RELEASE_DISTANCE_NM,
     Conclusion,
+    DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM,
     Decision,
     InferenceStep,
     ReasoningFacts,
@@ -50,6 +53,9 @@ from .state import (
 )
 
 __all__ = [
+    "ASW_TORPEDO_RELEASE_DISTANCE_KM",
+    "ASW_TORPEDO_RELEASE_DISTANCE_NM",
+    "DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM",
     "Conclusion",
     "Decision",
     "InferenceStep",

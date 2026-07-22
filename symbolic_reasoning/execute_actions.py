@@ -157,7 +157,9 @@ def _log_positive_action(
             action[1], action[2]
         )
     elif actor_index == 6:
-        text = "部署声纳浮标"
+        mode = "主动" if float(action[1]) > 0.5 else "被动"
+        depth = "浅层" if float(action[2]) > 0.5 else "深层"
+        text = "部署{}{}声呐浮标".format(depth, mode)
     elif actor_index == 7:
         text = "取消攻击"
     else:

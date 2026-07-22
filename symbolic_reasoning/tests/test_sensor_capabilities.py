@@ -108,19 +108,22 @@ class SensorCapabilityTests(unittest.TestCase):
         self.assertEqual(decision.rule_id, "R-SEARCH-002")
         self.assertEqual(decision.actions[SENSOR_ACTOR][0], ACTION_DISABLED)
 
-    def test_patrol_without_sensor_keeps_route_and_skips_sensor_action(self):
+    def test_patrol_does_not_generate_route_or_sensor_action(self):
         decision = SymbolicReasoningAgent().reason(
             _facts(
                 is_patrol_aircraft=True,
                 has_patrol_mission=True,
                 mission_id="patrol-1",
-                patrol_route_lons=(120.0, 120.1, 120.2),
-                patrol_route_lats=(30.0, 30.1, 30.0),
             )
         )
 
-        self.assertEqual(decision.conclusion, Conclusion.PATROL)
-        self.assertEqual(decision.actions[WAYPOINT_ACTOR][0], ACTION_THRESHOLD)
+        self.assertEqual(decision.conclusion, Conclusion.HOLD)
+        self.assertEqual(decision.rule_id, "R-BUOY-001")
+        self.assertNotIn(
+            "R-BUOY-002",
+            [step.rule_id for step in decision.inference_path],
+        )
+        self.assertEqual(decision.actions[WAYPOINT_ACTOR][0], ACTION_DISABLED)
         self.assertEqual(decision.actions[SENSOR_ACTOR][0], ACTION_DISABLED)
 
     def test_end_to_end_facts_preserve_sensor_capabilities(self):

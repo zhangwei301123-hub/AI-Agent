@@ -17,6 +17,11 @@ ACTION_THRESHOLD = 0.9
 ACTION_DISABLED = 0.01
 DEFAULT_ATTACK_QUANTITY = 2
 RETURN_FUEL_THRESHOLD_PCT = 20.0
+ASW_TORPEDO_RELEASE_DISTANCE_NM = 0.4
+ASW_TORPEDO_RELEASE_DISTANCE_KM = (
+    ASW_TORPEDO_RELEASE_DISTANCE_NM * 1.852
+)
+DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM = 7.408
 
 TAKEOFF_ACTOR = 0
 RETURN_TO_BASE_ACTOR = 1
@@ -40,7 +45,6 @@ class Conclusion(str, Enum):
     CHASE = "CHASE_TO_RANGE"
     CHASE_AND_ALIGN = "CHASE_AND_ALIGN"
     DEPLOY_SONOBUOY = "DEPLOY_SONOBUOY"
-    PATROL = "PATROL"
     SEARCH = "SEARCH"
     TAKEOFF = "TAKEOFF"
     CANCEL_ATTACK = "CANCEL_ATTACK"
@@ -216,6 +220,7 @@ class ReasoningFacts:
     target_entity_id: Optional[str] = None
     target_domain: TargetDomain = TargetDomain.UNKNOWN
     target_is_missile: bool = False
+    is_asw_aircraft: bool = False
     detected_target_count: int = 0
 
     incoming_missile: bool = False
@@ -277,11 +282,13 @@ class ReasoningFacts:
     has_patrol_mission: bool = False
     inside_patrol_area: bool = False
     mission_id: str = ""
-    patrol_route_lons: Tuple[float, ...] = ()
-    patrol_route_lats: Tuple[float, ...] = ()
-    patrol_altitude_level: int = 1
     altitude_above_sea_m: float = -1.0
     sonobuoy_count: int = 0
+    sonobuoy_deployment_needed: bool = True
+    nearest_active_sonobuoy_distance_km: float = -1.0
+    active_sonobuoy_coverage_km: float = (
+        DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity_id, str) or not self.entity_id.strip():
@@ -306,6 +313,7 @@ class ReasoningFacts:
 
         bool_fields = (
             "target_is_missile",
+            "is_asw_aircraft",
             "incoming_missile",
             "attack_authorized",
             "target_type_allowed",
@@ -334,6 +342,7 @@ class ReasoningFacts:
             "is_patrol_aircraft",
             "has_patrol_mission",
             "inside_patrol_area",
+            "sonobuoy_deployment_needed",
         )
         for field_name in bool_fields:
             if type(getattr(self, field_name)) is not bool:
@@ -367,6 +376,8 @@ class ReasoningFacts:
             "target_lat",
             "altitude_above_sea_m",
             "fuel_percentage",
+            "nearest_active_sonobuoy_distance_km",
+            "active_sonobuoy_coverage_km",
         )
         for field_name in numeric_fields:
             value = getattr(self, field_name)
@@ -377,8 +388,6 @@ class ReasoningFacts:
 
         if not 0 <= self.attack_altitude_level <= 5:
             raise ValueError("attack_altitude_level 必须位于 [0, 5]")
-        if not 0 <= self.patrol_altitude_level <= 5:
-            raise ValueError("patrol_altitude_level 必须位于 [0, 5]")
         if not 0 <= self.waypoint_velocity_level <= 4:
             raise ValueError("waypoint_velocity_level 必须位于 [0, 4]")
         if not isinstance(self.mission_id, str):
@@ -393,15 +402,6 @@ class ReasoningFacts:
             raise ValueError("current_attack_target_id 必须是字符串或 None")
         if self.strike_weapon_count < 0:
             raise ValueError("strike_weapon_count 不能小于 0")
-        if len(self.patrol_route_lons) != len(self.patrol_route_lats):
-            raise ValueError("巡逻航路经纬度数量必须一致")
-        if self.patrol_route_lons and len(self.patrol_route_lons) < 3:
-            raise ValueError("巡逻航路至少需要 3 个坐标点")
-        for value in self.patrol_route_lons + self.patrol_route_lats:
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
-                raise ValueError("巡逻航路坐标必须是数值")
-            if not math.isfinite(float(value)):
-                raise ValueError("巡逻航路坐标必须是有限数值")
 
 
 @dataclass(frozen=True)
@@ -790,6 +790,37 @@ class SymbolicReasoningAgent:
                 )
 
             if not evaluation.within_attack_range:
+                if (
+                    facts.is_asw_aircraft
+                    and facts.target_domain is TargetDomain.SUBMARINE
+                ):
+                    record(
+                        "R-ASW-001",
+                        "反潜飞机仅在目标距离不超过 0.4 海里时发射鱼雷，否则追踪接近",
+                        True,
+                        (
+                            "distance_km={:.4f}".format(facts.distance_km),
+                            "distance_nm={:.4f}".format(
+                                facts.distance_km / 1.852
+                            ),
+                            "release_limit_nm={:.1f}".format(
+                                ASW_TORPEDO_RELEASE_DISTANCE_NM
+                            ),
+                            "target_domain=SUBMARINE",
+                        ),
+                    )
+                    return self._decision(
+                        Conclusion.CHASE_TO_RANGE,
+                        "R-ASW-001",
+                        "反潜飞机尚未进入鱼雷释放距离，先飞向目标",
+                        (
+                            "distance_nm>0.4",
+                            "attack_request_allowed=False",
+                            "pursuit_allowed=True",
+                        ),
+                        facts,
+                        tuple(path),
+                    )
                 can_chase = evaluation.can_chase
                 record(
                     "R-RNG-004",
@@ -834,6 +865,26 @@ class SymbolicReasoningAgent:
                     "目标超出射程，非飞机平台不允许追击",
                     facts,
                     tuple(path),
+                )
+
+            if (
+                facts.is_asw_aircraft
+                and facts.target_domain is TargetDomain.SUBMARINE
+            ):
+                record(
+                    "R-ASW-001",
+                    "反潜飞机仅在目标距离不超过 0.4 海里时发射鱼雷，否则追踪接近",
+                    True,
+                    (
+                        "distance_km={:.4f}".format(facts.distance_km),
+                        "distance_nm={:.4f}".format(
+                            facts.distance_km / 1.852
+                        ),
+                        "release_limit_nm={:.1f}".format(
+                            ASW_TORPEDO_RELEASE_DISTANCE_NM
+                        ),
+                        "target_domain=SUBMARINE",
+                    ),
                 )
 
             aim_required = evaluation.aim_required
@@ -950,10 +1001,11 @@ class SymbolicReasoningAgent:
             and facts.inside_patrol_area
             and 0.0 <= facts.altitude_above_sea_m <= 500.0
             and facts.sonobuoy_count > 0
+            and facts.sonobuoy_deployment_needed
         )
         if record(
             "R-BUOY-001",
-            "巡逻机在含边界的巡逻区内且距海面 0 至 500 m 时允许部署浮标",
+            "巡逻机在任务区内、距海面 0 至 500 m 且不在已有主动浮标覆盖内时部署浅层主动声呐浮标",
             buoy_allowed,
             (
                 "is_patrol_aircraft={}".format(facts.is_patrol_aircraft),
@@ -963,52 +1015,39 @@ class SymbolicReasoningAgent:
                     facts.altitude_above_sea_m
                 ),
                 "sonobuoy_count={}".format(facts.sonobuoy_count),
+                "sonobuoy_deployment_needed={}".format(
+                    facts.sonobuoy_deployment_needed
+                ),
+                "nearest_active_sonobuoy_distance_km={:.3f}".format(
+                    facts.nearest_active_sonobuoy_distance_km
+                ),
+                "active_sonobuoy_coverage_km={:.3f}".format(
+                    facts.active_sonobuoy_coverage_km
+                ),
+                "sonobuoy_mode=ACTIVE_SHALLOW",
             ),
         ):
             return self._decision(
                 Conclusion.DEPLOY_SONOBUOY,
                 "R-BUOY-001",
-                "巡逻任务、区域、高度和浮标数量条件均满足",
+                "巡逻区域、高度、库存和主动覆盖间距均满足，部署浅层主动声呐浮标",
                 (
                     "patrol_aircraft=True",
                     "inside_patrol_area=True",
                     "0<=altitude_above_sea_m<=500",
                     "sonobuoy_count>0",
+                    "outside_active_sonobuoy_coverage=True",
+                    "passiveOrActive=True",
+                    "shallowOrDeep=True",
                 ),
                 facts,
                 tuple(path),
             )
 
-        patrol_allowed = (
-            facts.is_patrol_aircraft
-            and facts.has_patrol_mission
-            and len(facts.patrol_route_lons) >= 3
-            and len(facts.patrol_route_lons) == len(facts.patrol_route_lats)
-        )
-        if record(
-            "R-PATROL-001",
-            "巡逻飞机按照 getMissionList 返回的任务区域执行多点巡逻航路",
-            patrol_allowed,
-            (
-                "mission_id={}".format(facts.mission_id),
-                "is_patrol_aircraft={}".format(facts.is_patrol_aircraft),
-                "has_patrol_mission={}".format(facts.has_patrol_mission),
-                "inside_patrol_area={}".format(facts.inside_patrol_area),
-                "patrol_waypoint_count={}".format(
-                    len(facts.patrol_route_lons)
-                ),
-            ),
-        ):
-            return self._decision(
-                Conclusion.PATROL,
-                "R-PATROL-001",
-                "使用任务区域生成巡逻坐标并开启传感器",
-                (
-                    "mission_id={}".format(facts.mission_id),
-                    "patrol_waypoint_count={}".format(
-                        len(facts.patrol_route_lons)
-                    ),
-                ),
+        if facts.is_patrol_aircraft and facts.has_patrol_mission:
+            return self._hold(
+                "R-BUOY-001",
+                "本帧不满足浅层主动声呐浮标部署条件",
                 facts,
                 tuple(path),
             )
@@ -1146,8 +1185,6 @@ class SymbolicReasoningAgent:
             return WAYPOINT_ACTOR
         if conclusion is Conclusion.DEPLOY_SONOBUOY:
             return SONOBUOY_ACTOR
-        if conclusion is Conclusion.PATROL:
-            return WAYPOINT_ACTOR
         if conclusion is Conclusion.SEARCH:
             return SENSOR_ACTOR
         if conclusion is Conclusion.RETURN_TO_BASE:
@@ -1244,28 +1281,11 @@ class SymbolicReasoningAgent:
         elif conclusion is Conclusion.DEPLOY_SONOBUOY:
             actions[SONOBUOY_ACTOR] = [
                 ACTION_THRESHOLD,
-                1.0,
-                1.0,
+                1.0,  # passiveOrActive=True：主动声呐浮标
+                1.0,  # shallowOrDeep=True：浅层（最大水下约 40 m）
                 None,
                 None,
             ]
-        elif conclusion is Conclusion.PATROL:
-            point_count = len(facts.patrol_route_lons)
-            actions[WAYPOINT_ACTOR] = [
-                ACTION_THRESHOLD,
-                list(facts.patrol_route_lons),
-                list(facts.patrol_route_lats),
-                [facts.patrol_altitude_level] * point_count,
-                [facts.waypoint_velocity_level] * point_count,
-            ]
-            if facts.radar_available or facts.sonar_available:
-                actions[SENSOR_ACTOR] = [
-                    ACTION_THRESHOLD,
-                    float(facts.radar_available),
-                    float(facts.sonar_available),
-                    0.0,
-                    None,
-                ]
         elif conclusion is Conclusion.SEARCH:
             if facts.radar_available or facts.sonar_available:
                 actions[SENSOR_ACTOR] = [

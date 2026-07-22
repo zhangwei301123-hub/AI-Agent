@@ -17,7 +17,10 @@ import numpy as np
 from log import Log
 
 from .agent import (
+    ASW_TORPEDO_RELEASE_DISTANCE_KM,
+    ASW_TORPEDO_RELEASE_DISTANCE_NM,
     Conclusion,
+    DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM,
     Decision,
     ReasoningFacts,
     RETURN_FUEL_THRESHOLD_PCT,
@@ -74,9 +77,14 @@ class PatrolContext:
     is_patrol_aircraft: bool
     has_patrol_mission: bool
     inside_patrol_area: bool
-    route_lons: Tuple[float, ...] = ()
-    route_lats: Tuple[float, ...] = ()
-    altitude_level: int = 1
+    mission_id: str = ""
+
+
+@dataclass(frozen=True)
+class SonobuoyCoverage:
+    longitude: float
+    latitude: float
+    radius_km: float
 
 
 class SymbolicReasoningEnv:
@@ -111,6 +119,7 @@ class SymbolicReasoningEnv:
         self.engagement_state = engagement_state or EngagementState()
         self.weapon_fire_prechecker = weapon_fire_prechecker
         self._geometry_cache: Dict[int, Tuple[float, float]] = {}
+        self._commanded_active_sonobuoys: List[SonobuoyCoverage] = []
         self.current_step = 0
 
     def step(
@@ -152,6 +161,9 @@ class SymbolicReasoningEnv:
             )
             self._record_successful_lifecycle_actions(
                 decisions, execution_status, current_frame
+            )
+            self._record_successful_sonobuoys(
+                situation, decisions, execution_status
             )
         else:
             decisions, actions_dict = self.agent.build_actions(facts.values())
@@ -266,6 +278,18 @@ class SymbolicReasoningEnv:
             }
             incoming = self._find_incoming_missile(own, targets)
             patrol = self._patrol_context(own)
+            sonobuoy_coverage_facts = self._sonobuoy_coverage_facts(
+                own, situation
+            )
+            patrol_facts = {
+                "is_patrol_aircraft": patrol.is_patrol_aircraft,
+                "has_patrol_mission": patrol.has_patrol_mission,
+                "inside_patrol_area": patrol.inside_patrol_area,
+                "mission_id": patrol.mission_id,
+                "altitude_above_sea_m": own.altitude_m,
+                "sonobuoy_count": own.sonobuoy_count,
+                **sonobuoy_coverage_facts,
+            }
             if incoming is not None:
                 evade_lon, evade_lat = self._destination_point(
                     own.longitude,
@@ -287,18 +311,10 @@ class SymbolicReasoningEnv:
                     safety_clearance=(
                         own.communication_ok and not own.radar_jammed
                     ),
-                    is_patrol_aircraft=patrol.is_patrol_aircraft,
-                    has_patrol_mission=patrol.has_patrol_mission,
-                    inside_patrol_area=patrol.inside_patrol_area,
-                    mission_id=own.mission_id,
-                    patrol_route_lons=patrol.route_lons,
-                    patrol_route_lats=patrol.route_lats,
-                    patrol_altitude_level=patrol.altitude_level,
                     waypoint_velocity_level=3,
                     radar_available=own.has_radar_sensor,
                     sonar_available=own.has_sonar_sensor,
-                    altitude_above_sea_m=own.altitude_m,
-                    sonobuoy_count=own.sonobuoy_count,
+                    **patrol_facts,
                     **lifecycle_facts
                 )
                 continue
@@ -318,18 +334,10 @@ class SymbolicReasoningEnv:
                     safety_clearance=(
                         own.communication_ok and not own.radar_jammed
                     ),
-                    is_patrol_aircraft=patrol.is_patrol_aircraft,
-                    has_patrol_mission=patrol.has_patrol_mission,
-                    inside_patrol_area=patrol.inside_patrol_area,
-                    mission_id=own.mission_id,
-                    patrol_route_lons=patrol.route_lons,
-                    patrol_route_lats=patrol.route_lats,
-                    patrol_altitude_level=patrol.altitude_level,
                     waypoint_velocity_level=3,
                     radar_available=own.has_radar_sensor,
                     sonar_available=own.has_sonar_sensor,
-                    altitude_above_sea_m=own.altitude_m,
-                    sonobuoy_count=own.sonobuoy_count,
+                    **patrol_facts,
                     **lifecycle_facts
                 )
                 continue
@@ -363,6 +371,7 @@ class SymbolicReasoningEnv:
             facts = ReasoningFacts(
                 entity_id=own.command_id,
                 own_platform_type=own.domain,
+                is_asw_aircraft=own.is_asw_aircraft,
                 target_id=target_id,
                 target_entity_id=target.entity_id,
                 target_domain=target.domain,
@@ -396,18 +405,10 @@ class SymbolicReasoningEnv:
                 target_lon=target.longitude,
                 target_lat=target.latitude,
                 attack_altitude_level=self._attack_altitude_level(own, target),
-                is_patrol_aircraft=patrol.is_patrol_aircraft,
-                has_patrol_mission=patrol.has_patrol_mission,
-                inside_patrol_area=patrol.inside_patrol_area,
-                mission_id=own.mission_id,
-                patrol_route_lons=patrol.route_lons,
-                patrol_route_lats=patrol.route_lats,
-                patrol_altitude_level=patrol.altitude_level,
                 waypoint_velocity_level=3,
                 radar_available=own.has_radar_sensor,
                 sonar_available=own.has_sonar_sensor,
-                altitude_above_sea_m=own.altitude_m,
-                sonobuoy_count=own.sonobuoy_count,
+                **patrol_facts,
                 **lifecycle_facts
             )
             facts_by_entity[own.command_id] = facts
@@ -515,6 +516,17 @@ class SymbolicReasoningEnv:
             geometry = self._distance_and_bearing(own, target)
         distance_km, target_bearing = geometry
         strike_range_km = own.strike_range_for(target)
+        if (
+            own.is_asw_aircraft
+            and target.domain is TargetDomain.SUBMARINE
+            and strike_range_km > 0.0
+        ):
+            # 鱼雷本身即使标注了更大射程，反潜飞机也必须飞到 0.4 海里内
+            # 才允许提交发射请求。
+            strike_range_km = min(
+                strike_range_km,
+                ASW_TORPEDO_RELEASE_DISTANCE_KM,
+            )
         weapon_count = own.weapon_count_for(target)
         target_is_missile = (
             target.is_weapon and target.domain is TargetDomain.AIR
@@ -700,7 +712,13 @@ class SymbolicReasoningEnv:
         return min(threats, key=lambda item: (item[0], item[1].command_id))[1]
 
     def _patrol_context(self, own: EncodedEntity) -> PatrolContext:
-        info = self.mission_areas.get(own.mission_id)
+        mission_id = own.mission_id
+        info = self.mission_areas.get(mission_id)
+        if info is None and not mission_id and own.is_asw_aircraft:
+            single_mission = self._single_patrol_mission()
+            if single_mission is not None:
+                mission_id, info = single_mission
+
         area_points: Sequence[Any] = ()
         mission_is_patrol = own.has_patrol_mission
 
@@ -722,79 +740,140 @@ class SymbolicReasoningEnv:
                 own.longitude, own.latitude, area_points
             )
         )
-        route_lons: Tuple[float, ...] = ()
-        route_lats: Tuple[float, ...] = ()
-        if is_patrol_aircraft:
-            route_lons, route_lats = self._build_patrol_route(
-                own, area_points
-            )
-        if own.altitude_m <= 500.0:
-            altitude_level = 1
-        elif own.altitude_m <= 5000.0:
-            altitude_level = 3
-        else:
-            altitude_level = 5
         return PatrolContext(
             is_patrol_aircraft=is_patrol_aircraft,
             has_patrol_mission=mission_is_patrol,
             inside_patrol_area=inside,
-            route_lons=route_lons,
-            route_lats=route_lats,
-            altitude_level=altitude_level,
+            mission_id=mission_id,
         )
+
+    def _single_patrol_mission(
+        self,
+    ) -> Optional[Tuple[str, Mapping[str, Any]]]:
+        """态势不带 missionId 时，只在唯一巡逻任务场景中自动归属。"""
+
+        candidates: List[Tuple[str, Mapping[str, Any]]] = []
+        for mission_id, info in self.mission_areas.items():
+            if not isinstance(info, Mapping):
+                continue
+            points = info.get("area_points") or info.get("areaPoints") or ()
+            if not isinstance(points, Sequence) or len(points) < 3:
+                continue
+            text = " ".join(
+                str(info.get(key) or "")
+                for key in (
+                    "mission_type",
+                    "missionType",
+                    "name",
+                    "mission_name",
+                    "missionName",
+                )
+            ).casefold()
+            is_patrol = bool(info.get("is_patrol"))
+            is_patrol = is_patrol or "巡逻" in text or "patrol" in text
+            if is_patrol:
+                candidates.append((str(mission_id), info))
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _sonobuoy_coverage_facts(
+        self,
+        own: EncodedEntity,
+        situation: EncodedSituation,
+    ) -> Dict[str, Any]:
+        """判断飞机当前位置是否已被己方主动声呐浮标覆盖。"""
+
+        coverages: List[SonobuoyCoverage] = []
+        for entity in situation.entities:
+            if entity.is_enemy or entity.is_contact:
+                continue
+            if not entity.is_active_sonobuoy:
+                continue
+            radius_km = (
+                entity.underwater_sensor_range_km
+                if entity.underwater_sensor_range_km > 0.0
+                else DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM
+            )
+            coverages.append(
+                SonobuoyCoverage(
+                    longitude=entity.longitude,
+                    latitude=entity.latitude,
+                    radius_km=radius_km,
+                )
+            )
+        coverages.extend(self._commanded_active_sonobuoys)
+
+        if not coverages:
+            return {
+                "sonobuoy_deployment_needed": True,
+                "nearest_active_sonobuoy_distance_km": -1.0,
+                "active_sonobuoy_coverage_km": (
+                    DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM
+                ),
+            }
+
+        distances = [
+            self._ground_distance_km(
+                own.longitude,
+                own.latitude,
+                coverage.longitude,
+                coverage.latitude,
+            )
+            for coverage in coverages
+        ]
+        nearest_index = min(range(len(distances)), key=distances.__getitem__)
+        inside_coverage = any(
+            distance <= coverage.radius_km + 1e-9
+            for distance, coverage in zip(distances, coverages)
+        )
+        return {
+            "sonobuoy_deployment_needed": not inside_coverage,
+            "nearest_active_sonobuoy_distance_km": distances[nearest_index],
+            "active_sonobuoy_coverage_km": coverages[nearest_index].radius_km,
+        }
 
     @staticmethod
-    def _build_patrol_route(
-        own: EncodedEntity, raw_points: Sequence[Any]
-    ) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
-        """把任务边界向中心收缩，生成始终位于区域内部的确定性巡逻航路。"""
+    def _ground_distance_km(
+        lon1: float, lat1: float, lon2: float, lat2: float
+    ) -> float:
+        """浮标覆盖按海面水平距离计算，不叠加飞机高度差。"""
 
-        points: List[Tuple[float, float]] = []
-        for item in raw_points:
-            if isinstance(item, Mapping):
-                lon = item.get("lon", item.get("longitude"))
-                lat = item.get("lat", item.get("latitude"))
-            elif isinstance(item, Sequence) and not isinstance(
-                item, (str, bytes)
-            ):
-                if len(item) < 2:
-                    continue
-                lon, lat = item[0], item[1]
-            else:
-                continue
-            try:
-                point = (float(lon), float(lat))
-            except (TypeError, ValueError):
-                continue
-            if not points or point != points[-1]:
-                points.append(point)
-        if len(points) > 1 and points[0] == points[-1]:
-            points.pop()
-        if len(points) < 3:
-            return (), ()
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = lat2_rad - lat1_rad
+        delta_lon = math.radians(lon2 - lon1)
+        haversine = (
+            math.sin(delta_lat / 2.0) ** 2
+            + math.cos(lat1_rad)
+            * math.cos(lat2_rad)
+            * math.sin(delta_lon / 2.0) ** 2
+        )
+        return 2.0 * 6371.0088 * math.asin(
+            min(1.0, math.sqrt(max(0.0, haversine)))
+        )
 
-        center_lon = sum(point[0] for point in points) / len(points)
-        center_lat = sum(point[1] for point in points) / len(points)
-        inset = [
-            (
-                center_lon + (lon - center_lon) * 0.8,
-                center_lat + (lat - center_lat) * 0.8,
+    def _record_successful_sonobuoys(
+        self,
+        situation: EncodedSituation,
+        decisions: Mapping[str, Decision],
+        execution_status: Mapping[str, str],
+    ) -> None:
+        """RPC 成功后立即预留覆盖，防止新浮标出现前逐帧重复投放。"""
+
+        for entity_id, decision in decisions.items():
+            if decision.conclusion is not Conclusion.DEPLOY_SONOBUOY:
+                continue
+            if execution_status.get(entity_id) != "SUCCESS":
+                continue
+            entity = situation.find_entity(entity_id)
+            if entity is None:
+                continue
+            self._commanded_active_sonobuoys.append(
+                SonobuoyCoverage(
+                    longitude=entity.longitude,
+                    latitude=entity.latitude,
+                    radius_km=DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM,
+                )
             )
-            for lon, lat in points
-        ]
-        start = min(
-            range(len(inset)),
-            key=lambda index: (
-                (inset[index][0] - own.longitude) ** 2
-                + (inset[index][1] - own.latitude) ** 2,
-                index,
-            ),
-        )
-        ordered = inset[start:] + inset[:start]
-        return (
-            tuple(point[0] for point in ordered),
-            tuple(point[1] for point in ordered),
-        )
 
     def _record_successful_attacks(
         self,
@@ -1099,6 +1178,15 @@ def log_step(result: SymbolicStepResult, step_index: int, logger: Any) -> None:
         # SEARCH 只控制传感器，不输出其开启或关闭的推理日志。
         if decision.conclusion is Conclusion.SEARCH:
             continue
+        facts = result.facts.get(entity_id)
+        # 系统自行执行巡逻；没有触发浮标动作时属于安静保持，不是推理路径。
+        if (
+            decision.conclusion is Conclusion.HOLD
+            and facts is not None
+            and facts.is_patrol_aircraft
+            and facts.has_patrol_mission
+        ):
+            continue
         entity = entities.get(entity_id)
         name = entity.name if entity is not None else entity_id
         status = (result.execution_status or {}).get(entity_id, "UNKNOWN")
@@ -1376,9 +1464,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     logger.info(
         "[规则参数] missile_intercept_priority_km=%s missile_evade_km=%s "
-        "target_loss_grace_frames=%s fire_rejection_cooldown_frames=%s",
+        "asw_torpedo_release_nm=%s target_loss_grace_frames=%s "
+        "fire_rejection_cooldown_frames=%s",
         args.missile_intercept_distance_km,
         MISSILE_EVADE_DISTANCE_KM,
+        ASW_TORPEDO_RELEASE_DISTANCE_NM,
         args.target_loss_grace_frames,
         args.fire_rejection_cooldown_frames,
     )
