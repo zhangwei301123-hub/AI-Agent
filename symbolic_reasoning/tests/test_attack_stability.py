@@ -60,6 +60,86 @@ def _payload(contact_id=None, last_detect="1秒", uncertainty=None):
     return {"sideGuid": "red-side", "UnitList": units}
 
 
+def _multi_ship_salvo_payload(weapon_owners):
+    """构造三舰对同一目标齐射的态势；武器位置靠近对应发射舰。"""
+
+    ship_longitudes = {
+        "red-ship-a": 120.0,
+        "red-ship-b": 120.2,
+        "red-ship-c": 120.4,
+    }
+    units = []
+    for ship_id, longitude in ship_longitudes.items():
+        units.append(
+            {
+                "guid": ship_id,
+                "SideId": "red-side",
+                "forceSide": "红方",
+                "IsContact": False,
+                "IsWeapon": False,
+                "unitType": 1,
+                "unitCategory": 1,
+                "Icon2D": "/ArmyIcon/Ship/red.svg",
+                "longitude": longitude,
+                "latitude": 30.0,
+                "altitude": 0.0,
+                "BloodAmount": 100.0,
+            }
+        )
+    units.append(
+        {
+            "guid": "blue-target",
+            "contactGuid": "blue-contact",
+            "SideId": "blue-side",
+            "forceSide": "蓝方",
+            "IsContact": True,
+            "IsWeapon": False,
+            "unitType": 1,
+            "unitCategory": 1,
+            "Icon2D": "/ArmyIcon/Ship/blue.svg",
+            "longitude": 121.0,
+            "latitude": 30.0,
+            "altitude": 0.0,
+            "BloodAmount": 100.0,
+        }
+    )
+
+    links = []
+    for owner_id in weapon_owners:
+        for salvo_index in range(2):
+            weapon_id = "weapon-{}-{}".format(owner_id, salvo_index)
+            units.append(
+                {
+                    "guid": weapon_id,
+                    "SideId": "red-side",
+                    "forceSide": "红方",
+                    "IsContact": False,
+                    "IsWeapon": True,
+                    "unitType": 0,
+                    "unitCategory": 0,
+                    "Icon2D": "/ArmyIcon/Weapon/missile.svg",
+                    "longitude": ship_longitudes[owner_id]
+                    + 0.001 * (salvo_index + 1),
+                    "latitude": 30.0,
+                    "altitude": 50.0,
+                    "BloodAmount": 100.0,
+                }
+            )
+            links.append(
+                {
+                    "Arr": [
+                        {"unitguid": weapon_id},
+                        {"unitguid": "blue-target"},
+                    ]
+                }
+            )
+    return {
+        "sideGuid": "red-side",
+        "UnitList": units,
+        "radiationAndDataLinkLine": {"WeaponTarget": links},
+    }
+
+
 class _FiringInfoStub:
     def __init__(self, can_fire):
         self.can_fire = can_fire
@@ -92,6 +172,45 @@ class _FiringInfoStub:
 
 
 class AttackStabilityTests(unittest.TestCase):
+    def test_intercepted_salvos_release_only_their_ship_slots(self):
+        state = EngagementState(weapon_appearance_grace_frames=10)
+        for attacker_id in (
+            "red-ship-a",
+            "red-ship-b",
+            "red-ship-c",
+        ):
+            state.record_successful_attack(
+                attacker_id=attacker_id,
+                target_id="blue-contact",
+                target_aliases=("blue-target",),
+                started_frame=0,
+                target_is_missile=False,
+                attack_quantity=2,
+            )
+
+        encoder = EntityEncoder(max_entities=16)
+        all_six_in_flight = encoder.encode(
+            _multi_ship_salvo_payload(
+                ("red-ship-a", "red-ship-b", "red-ship-c")
+            )
+        )
+        state.update_from_situation(all_six_in_flight, current_frame=1)
+        self.assertEqual(state.active_attackers("blue-contact"), 3)
+
+        # A、B 的四发被拦截，只剩 C 的两发在途：A、B 应立即腾出两个槽位。
+        only_c_in_flight = encoder.encode(
+            _multi_ship_salvo_payload(("red-ship-c",))
+        )
+        state.update_from_situation(only_c_in_flight, current_frame=2)
+
+        self.assertEqual(
+            state.attacker_ids("blue-contact"), {"red-ship-c"}
+        )
+        self.assertEqual(state.active_attackers("blue-contact"), 1)
+        self.assertTrue(
+            state.slot_available("red-ship-d", "blue-contact")
+        )
+
     def test_contact_quality_signature_ignores_sub_meter_float_jitter(self):
         encoder = EntityEncoder(max_entities=4)
         first = encoder.encode(

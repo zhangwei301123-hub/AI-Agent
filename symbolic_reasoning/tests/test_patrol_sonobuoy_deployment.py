@@ -137,7 +137,7 @@ class PatrolSonobuoyDeploymentTests(unittest.TestCase):
         self.assertFalse(any("R-BUOY-002" in item for item in messages))
         self.assertFalse(any("巡逻航路" in item for item in messages))
 
-    def test_active_buoy_coverage_blocks_redeployment(self):
+    def test_existing_active_buoy_does_not_block_inventory_based_deployment(self):
         env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
 
         result = env.step(
@@ -147,14 +147,15 @@ class PatrolSonobuoyDeploymentTests(unittest.TestCase):
             ),
             execute_commands=False,
         )
-        facts = result.facts["asw-aircraft-1"]
         decision = result.decisions["asw-aircraft-1"]
 
-        self.assertFalse(facts.sonobuoy_deployment_needed)
-        self.assertEqual(decision.conclusion, Conclusion.HOLD)
-        self.assertEqual(decision.actions[SONOBUOY_ACTOR][0], ACTION_DISABLED)
+        self.assertEqual(decision.conclusion, Conclusion.DEPLOY_SONOBUOY)
+        self.assertEqual(
+            decision.actions[SONOBUOY_ACTOR],
+            [ACTION_THRESHOLD, 1.0, 1.0, None, None],
+        )
 
-    def test_passive_buoy_does_not_count_as_active_coverage(self):
+    def test_existing_passive_buoy_does_not_block_deployment(self):
         env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
 
         result = env.step(
@@ -165,9 +166,6 @@ class PatrolSonobuoyDeploymentTests(unittest.TestCase):
             execute_commands=False,
         )
 
-        self.assertTrue(
-            result.facts["asw-aircraft-1"].sonobuoy_deployment_needed
-        )
         self.assertEqual(
             result.decisions["asw-aircraft-1"].conclusion,
             Conclusion.DEPLOY_SONOBUOY,
@@ -196,7 +194,7 @@ class PatrolSonobuoyDeploymentTests(unittest.TestCase):
         self.assertTrue(stub.request.passiveOrActive)
         self.assertTrue(stub.request.shallowOrDeep)
 
-    def test_successful_deployment_reserves_coverage_until_visible(self):
+    def test_successful_deployment_does_not_block_next_inventory_based_decision(self):
         env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
 
         env.step(
@@ -209,12 +207,9 @@ class PatrolSonobuoyDeploymentTests(unittest.TestCase):
         )
         second = env.step(_payload(_aircraft()), execute_commands=False)
 
-        self.assertFalse(
-            second.facts["asw-aircraft-1"].sonobuoy_deployment_needed
-        )
         self.assertEqual(
             second.decisions["asw-aircraft-1"].conclusion,
-            Conclusion.HOLD,
+            Conclusion.DEPLOY_SONOBUOY,
         )
 
 

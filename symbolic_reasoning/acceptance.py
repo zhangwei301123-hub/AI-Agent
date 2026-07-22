@@ -23,12 +23,16 @@ from typing import (
 )
 
 from .agent import (
+    ACTION_DISABLED,
+    ACTION_THRESHOLD,
     ATTACK_ACTOR,
     Conclusion,
     Decision,
     ReasoningFacts,
+    SONOBUOY_ACTOR,
     SymbolicReasoningAgent,
     TargetEvaluation,
+    WAYPOINT_ACTOR,
 )
 from .entity import EncodedEntity, TargetDomain
 from .symbolic_reasoning4test import SymbolicReasoningEnv
@@ -149,7 +153,7 @@ def correctness_cases() -> Tuple[Tuple[str, ReasoningFacts, Conclusion, str], ..
         ),
         (
             "COR-AIR-ALIGN",
-            _facts(aimed_at_target=False, heading_difference_deg=30.0),
+            _facts(aimed_at_target=False, heading_difference_deg=46.0),
             Conclusion.CHASE_AND_ALIGN,
             "R-AIM-002",
         ),
@@ -205,15 +209,24 @@ def _valid_decision(decision: Decision) -> bool:
 def _valid_case_requirement(case_id: str, decision: Decision) -> bool:
     """检查只属于某个现场验收场景的直观业务结果。"""
 
-    if case_id != "COR-INTERCEPTOR-SALVO-LIMIT":
-        return True
-    quantity = decision.actions[ATTACK_ACTOR][4]
-    return (
-        decision.conclusion is Conclusion.REQUEST_ATTACK
-        and isinstance(quantity, int)
-        and not isinstance(quantity, bool)
-        and 1 <= quantity <= 2
-    )
+    if case_id == "COR-INTERCEPTOR-SALVO-LIMIT":
+        quantity = decision.actions[ATTACK_ACTOR][4]
+        return (
+            decision.conclusion is Conclusion.REQUEST_ATTACK
+            and isinstance(quantity, int)
+            and not isinstance(quantity, bool)
+            and 1 <= quantity <= 2
+        )
+    if case_id == "COR-BUOY-500M":
+        buoy_action = decision.actions[SONOBUOY_ACTOR]
+        return (
+            decision.conclusion is Conclusion.DEPLOY_SONOBUOY
+            and buoy_action[0] == ACTION_THRESHOLD
+            and buoy_action[1] > 0.5
+            and buoy_action[2] > 0.5
+            and decision.actions[WAYPOINT_ACTOR][0] == ACTION_DISABLED
+        )
+    return True
 
 
 def _valid_explanation_text(decision: Decision, explanation: str) -> bool:

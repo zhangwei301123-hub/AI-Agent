@@ -813,10 +813,13 @@ AND try_next_nearest_target = True
 1. 在选定目标后、发出攻击请求前原子预留槽位；预留槽位也计入上限 3，避免多个实体同帧超限；
 2. `AttackTarget` RPC 被服务端接受、执行状态为 `SUCCESS` 后，将本帧预留转为正式
    占用并记录 `slot_started_frame`；这只表示攻击请求已接受，不等同于已确认形成武器实体；
-3. 态势中出现指向该目标的我方武器实体时，标记为“已确认在途”；
-4. 已确认在途的我方武器实体随后从态势中消失时，下一帧立即释放该目标的并发槽位。该消失可能表示命中、被拦截或失效，均允许重新攻击；
-5. `AttackTarget` RPC 返回成功但连续 10 个后台数据帧仍未出现关联武器实体时，
-   释放槽位，避免请求已接受但武器未形成或链路缺失造成长期锁定；
+3. 态势中出现指向该目标的我方武器实体时，以武器 GUID 持续跟踪；由于态势没有
+   直接提供发射平台字段，武器首次出现时按空间距离和本次齐射数量归属到具体攻击者；
+4. 某一攻击者已确认在途的最后一发武器随后从态势中消失时，下一帧只释放该攻击者
+   的并发槽位。该消失可能表示命中、被拦截或失效；其他攻击者仍有远距离在途武器
+   时，不再锁住已经空出的槽位，允许新舰立即补位；
+5. `AttackTarget` RPC 返回成功但连续 10 个后台数据帧仍未出现归属于该攻击者的
+   武器实体时，释放该攻击者槽位，避免请求已接受但武器未形成或链路缺失造成长期锁定；
 6. 系统明确反馈目标命中或目标删除时立即释放槽位；
 7. 自 `slot_started_frame` 起满 600 个后台数据帧仍未被上述条件释放时，按硬超时兜底释放；
 8. 攻击请求失败、尚未成功发射时，立即回滚预留槽位。
@@ -840,7 +843,7 @@ THEN release_concurrency_slot = True
 AND release_reason = ATTACK_SLOT_HARD_TIMEOUT
 ```
 
-以上槽位释放只影响“本实体已有针对该目标的在途攻击”判断。对于导弹目标，R-INT-001 的累计最多 4 发限制仍按目标生命周期累计，已发射数量不会因我方拦截弹消失而回减。
+以上槽位按攻击者分别释放，只影响“本实体已有针对该目标的在途攻击”和同目标并发数判断。对于导弹目标，R-INT-001 的累计最多 4 发限制仍按目标生命周期累计，已发射数量不会因我方拦截弹消失而回减。
 
 **推理路径示例：**
 
@@ -904,9 +907,6 @@ own_platform_role
 has_patrol_mission
 own_altitude_above_sea_m
 sonobuoy_available
-sonobuoy_deployment_needed
-nearest_active_sonobuoy_distance_km
-active_sonobuoy_coverage_km
 incoming_missile
 ```
 
@@ -918,7 +918,6 @@ AND has_patrol_mission == True
 AND inside_patrol_area == True
 AND 0m <= own_altitude_above_sea_m <= 500m
 AND sonobuoy_available == True
-AND sonobuoy_deployment_needed == True
 AND incoming_missile == False
 THEN deploy_sonobuoy_allowed = True
 AND passiveOrActive = True
@@ -935,20 +934,17 @@ ELSE deploy_sonobuoy_allowed = False
 5. 紧急导弹规避时禁止部署浮标；
 6. 本规则替代旧代码中的 `altitude > 150英尺 × 0.3048` 条件。
 7. 只部署浅层主动声呐浮标：`passiveOrActive=True`、`shallowOrDeep=True`；
-8. 主动浮标覆盖半径读取 `rangeSensor_UnderWater[].Radius`，按海面水平距离计算；
-9. 缺少覆盖半径时默认使用 `7.408 km`，被动浮标不占用主动覆盖范围；
-10. 飞机位于任一主动浮标覆盖边界或内部时不重复部署；RPC 成功后立即预留覆盖点。
+8. 不使用已有浮标覆盖范围阻断部署；只要库存仍大于0，就允许继续部署。
 
 **推理路径示例（允许部署）：**
 
 ```text
-输入：巡逻机 H1；承担巡逻任务；位于巡逻区边界；距海面高度=480m；浮标数量=3；不在主动覆盖内；无导弹威胁
+输入：巡逻机 H1；承担巡逻任务；位于巡逻区边界；距海面高度=480m；浮标数量=3；无导弹威胁
 1. R-BUOY-001：PATROL_AIRCRAFT 且 has_patrol_mission=True        → 通过
 2. R-BUOY-001：inside_patrol_area=True（边界计入）               → 通过
 3. R-BUOY-001：0 <= 480 <= 500                                  → 通过
 4. R-BUOY-001：sonobuoy_available=True                           → 通过
-5. R-BUOY-001：sonobuoy_deployment_needed=True                   → 通过
-6. R-BUOY-001：incoming_missile=False                            → 通过
+5. R-BUOY-001：incoming_missile=False                            → 通过
 结论：DEPLOY_SONOBUOY，浅层主动（True, True）
 依据：R-BUOY-001
 ```
@@ -1199,9 +1195,9 @@ requested_quantity、submitted_quantity、mode、candidate_evidence`。
   10 帧；Contact 质量变化立即重试，否则到期重试。
 - [x] Contact 丢失防抖：通过稳定实体 GUID 关联变化的 Contact GUID，默认连续
   丢失 3 帧才取消攻击，重新发现立即清零。
-- [x] 同目标并发槽位：已确认在途的我方武器消失时立即释放；`AttackTarget` RPC
-  被接受后 10 帧仍未观察到关联武器实体时释放；命中/目标删除时释放；600 帧仅
-  作为最终硬超时兜底。
+- [x] 同目标并发槽位：按武器 GUID 和发射平台分别跟踪；某平台最后一发在途武器
+  消失时只释放该平台槽位，其他平台仍在途不阻止补位；`AttackTarget` RPC 被接受
+  后 10 帧仍未观察到归属武器时释放；命中/目标删除时释放；600 帧仅作最终兜底。
 - [x] 拦截弹数量：同一导弹目标生命周期内累计最多 4 发。
 - [x] 浮标高度：距海面 0～500 m，0 m 和 500 m 边界均允许，采用系统反馈高度。
 - [x] 巡逻区域：边界视为区域内；只有承担巡逻任务的巡逻机允许部署浮标。

@@ -20,7 +20,6 @@ from .agent import (
     ASW_TORPEDO_RELEASE_DISTANCE_KM,
     ASW_TORPEDO_RELEASE_DISTANCE_NM,
     Conclusion,
-    DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM,
     Decision,
     ReasoningFacts,
     RETURN_FUEL_THRESHOLD_PCT,
@@ -80,13 +79,6 @@ class PatrolContext:
     mission_id: str = ""
 
 
-@dataclass(frozen=True)
-class SonobuoyCoverage:
-    longitude: float
-    latitude: float
-    radius_km: float
-
-
 class SymbolicReasoningEnv:
     """完成“编码 → 校验 → 规则匹配 → 推理 → 默认实际执行”。"""
 
@@ -119,7 +111,6 @@ class SymbolicReasoningEnv:
         self.engagement_state = engagement_state or EngagementState()
         self.weapon_fire_prechecker = weapon_fire_prechecker
         self._geometry_cache: Dict[int, Tuple[float, float]] = {}
-        self._commanded_active_sonobuoys: List[SonobuoyCoverage] = []
         self.current_step = 0
 
     def step(
@@ -161,9 +152,6 @@ class SymbolicReasoningEnv:
             )
             self._record_successful_lifecycle_actions(
                 decisions, execution_status, current_frame
-            )
-            self._record_successful_sonobuoys(
-                situation, decisions, execution_status
             )
         else:
             decisions, actions_dict = self.agent.build_actions(facts.values())
@@ -278,9 +266,6 @@ class SymbolicReasoningEnv:
             }
             incoming = self._find_incoming_missile(own, targets)
             patrol = self._patrol_context(own)
-            sonobuoy_coverage_facts = self._sonobuoy_coverage_facts(
-                own, situation
-            )
             patrol_facts = {
                 "is_patrol_aircraft": patrol.is_patrol_aircraft,
                 "has_patrol_mission": patrol.has_patrol_mission,
@@ -288,7 +273,6 @@ class SymbolicReasoningEnv:
                 "mission_id": patrol.mission_id,
                 "altitude_above_sea_m": own.altitude_m,
                 "sonobuoy_count": own.sonobuoy_count,
-                **sonobuoy_coverage_facts,
             }
             if incoming is not None:
                 evade_lon, evade_lat = self._destination_point(
@@ -775,106 +759,6 @@ class SymbolicReasoningEnv:
                 candidates.append((str(mission_id), info))
         return candidates[0] if len(candidates) == 1 else None
 
-    def _sonobuoy_coverage_facts(
-        self,
-        own: EncodedEntity,
-        situation: EncodedSituation,
-    ) -> Dict[str, Any]:
-        """判断飞机当前位置是否已被己方主动声呐浮标覆盖。"""
-
-        coverages: List[SonobuoyCoverage] = []
-        for entity in situation.entities:
-            if entity.is_enemy or entity.is_contact:
-                continue
-            if not entity.is_active_sonobuoy:
-                continue
-            radius_km = (
-                entity.underwater_sensor_range_km
-                if entity.underwater_sensor_range_km > 0.0
-                else DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM
-            )
-            coverages.append(
-                SonobuoyCoverage(
-                    longitude=entity.longitude,
-                    latitude=entity.latitude,
-                    radius_km=radius_km,
-                )
-            )
-        coverages.extend(self._commanded_active_sonobuoys)
-
-        if not coverages:
-            return {
-                "sonobuoy_deployment_needed": True,
-                "nearest_active_sonobuoy_distance_km": -1.0,
-                "active_sonobuoy_coverage_km": (
-                    DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM
-                ),
-            }
-
-        distances = [
-            self._ground_distance_km(
-                own.longitude,
-                own.latitude,
-                coverage.longitude,
-                coverage.latitude,
-            )
-            for coverage in coverages
-        ]
-        nearest_index = min(range(len(distances)), key=distances.__getitem__)
-        inside_coverage = any(
-            distance <= coverage.radius_km + 1e-9
-            for distance, coverage in zip(distances, coverages)
-        )
-        return {
-            "sonobuoy_deployment_needed": not inside_coverage,
-            "nearest_active_sonobuoy_distance_km": distances[nearest_index],
-            "active_sonobuoy_coverage_km": coverages[nearest_index].radius_km,
-        }
-
-    @staticmethod
-    def _ground_distance_km(
-        lon1: float, lat1: float, lon2: float, lat2: float
-    ) -> float:
-        """浮标覆盖按海面水平距离计算，不叠加飞机高度差。"""
-
-        lat1_rad = math.radians(lat1)
-        lat2_rad = math.radians(lat2)
-        delta_lat = lat2_rad - lat1_rad
-        delta_lon = math.radians(lon2 - lon1)
-        haversine = (
-            math.sin(delta_lat / 2.0) ** 2
-            + math.cos(lat1_rad)
-            * math.cos(lat2_rad)
-            * math.sin(delta_lon / 2.0) ** 2
-        )
-        return 2.0 * 6371.0088 * math.asin(
-            min(1.0, math.sqrt(max(0.0, haversine)))
-        )
-
-    def _record_successful_sonobuoys(
-        self,
-        situation: EncodedSituation,
-        decisions: Mapping[str, Decision],
-        execution_status: Mapping[str, str],
-    ) -> None:
-        """RPC 成功后立即预留覆盖，防止新浮标出现前逐帧重复投放。"""
-
-        for entity_id, decision in decisions.items():
-            if decision.conclusion is not Conclusion.DEPLOY_SONOBUOY:
-                continue
-            if execution_status.get(entity_id) != "SUCCESS":
-                continue
-            entity = situation.find_entity(entity_id)
-            if entity is None:
-                continue
-            self._commanded_active_sonobuoys.append(
-                SonobuoyCoverage(
-                    longitude=entity.longitude,
-                    latitude=entity.latitude,
-                    radius_km=DEFAULT_ACTIVE_SONOBUOY_COVERAGE_KM,
-                )
-            )
-
     def _record_successful_attacks(
         self,
         facts: Mapping[str, ReasoningFacts],
@@ -897,6 +781,7 @@ class SymbolicReasoningEnv:
                 target_is_missile=entity_facts.target_is_missile,
                 target_aliases=(entity_facts.target_entity_id,),
                 interceptor_count=entity_facts.attack_quantity,
+                attack_quantity=entity_facts.attack_quantity,
             )
 
     def _record_successful_lifecycle_actions(

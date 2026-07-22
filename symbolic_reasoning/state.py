@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Set, Tuple
 
-from .entity import EncodedSituation
+from .entity import EncodedEntity, EncodedSituation
 
 
 ATTACK_SLOT_TIMEOUT_FRAMES = 600
@@ -23,6 +23,7 @@ class AttackSlot:
     target_id: str
     started_frame: int
     target_is_missile: bool
+    salvo_quantity: int = 1
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,12 @@ class EngagementState:
         self._interceptors_launched: Dict[str, int] = {}
         self._missile_last_seen: Dict[str, int] = {}
         self._target_aliases: Dict[str, str] = {}
-        self._targets_with_seen_weapon: Set[str] = set()
+        # 态势只直接给出“武器 -> 目标”链路，不给出发射平台。武器首次
+        # 出现时按其与各发射平台的距离归属到具体攻击槽位，之后用武器
+        # GUID 持续跟踪。这样某一舰的导弹全部被拦截后，只释放该舰槽位，
+        # 不会被另一舰仍在远航的导弹占住全部三个并发槽位。
+        self._weapon_assignments: Dict[str, Tuple[str, str]] = {}
+        self._slots_with_seen_weapon: Set[Tuple[str, str]] = set()
         self._takeoff_requests: Dict[str, int] = {}
         self._return_requests: Dict[str, int] = {}
         self._target_missing_frames: Dict[Tuple[str, str], int] = {}
@@ -91,7 +97,8 @@ class EngagementState:
         self._interceptors_launched.clear()
         self._missile_last_seen.clear()
         self._target_aliases.clear()
-        self._targets_with_seen_weapon.clear()
+        self._weapon_assignments.clear()
+        self._slots_with_seen_weapon.clear()
         self._takeoff_requests.clear()
         self._return_requests.clear()
         self._target_missing_frames.clear()
@@ -161,7 +168,8 @@ class EngagementState:
                         self._target_missing_frames.get(key, 0) + 1
                     )
 
-        in_flight_target_ids: Set[str] = set()
+        in_flight_weapons: Dict[str, EncodedEntity] = {}
+        weapon_target_ids: Dict[str, str] = {}
         # 只有“我方武器实体发生动能命中并关联目标”才视为我方导弹命中。
         # 目标自身 WeaponImpact=2 无法说明攻击来源，不能据此提前释放槽位。
         for weapon in situation.entities:
@@ -181,27 +189,79 @@ class EngagementState:
                         hit_target_ids.add(target.command_id)
                         hit_target_ids.add(target.entity_id)
                 else:
-                    in_flight_target_ids.add(canonical_id)
+                    in_flight_weapons[weapon.entity_id] = weapon
+                    weapon_target_ids[weapon.entity_id] = canonical_id
 
-        # 在途武器一旦出现就开始跟踪；之后从态势中消失，视为已命中、被拦截
-        # 或失效，立即释放并发槽位，允许再次攻击。累计拦截弹数量仍保留。
-        self._targets_with_seen_weapon.update(in_flight_target_ids)
+        # 清理已命中、被拦截或失效的武器 GUID。槽位是否释放在完成本帧
+        # 新武器归属后统一判断，避免武器列表顺序造成短暂误释放。
+        current_weapon_ids = set(in_flight_weapons)
+        for weapon_id in list(self._weapon_assignments):
+            if weapon_id not in current_weapon_ids:
+                self._weapon_assignments.pop(weapon_id, None)
+
+        # 将新出现的在途武器归属到最接近且仍有齐射容量的发射平台。
+        # 归属一旦建立便以武器 GUID 为准，不会因飞行过程中位置变化而漂移。
+        for weapon_id, weapon in in_flight_weapons.items():
+            if weapon_id in self._weapon_assignments:
+                continue
+            canonical_id = weapon_target_ids[weapon_id]
+            slots = self._slots.get(canonical_id, {})
+            if not slots:
+                continue
+            assigned_counts: Dict[str, int] = {}
+            for assigned_target, assigned_attacker in (
+                self._weapon_assignments.values()
+            ):
+                if assigned_target == canonical_id:
+                    assigned_counts[assigned_attacker] = (
+                        assigned_counts.get(assigned_attacker, 0) + 1
+                    )
+
+            candidates = []
+            for attacker_id, slot in slots.items():
+                if assigned_counts.get(attacker_id, 0) >= slot.salvo_quantity:
+                    continue
+                attacker = situation.find_entity(attacker_id)
+                distance_km = (
+                    attacker.distance_to_km(weapon)
+                    if attacker is not None
+                    else float("inf")
+                )
+                candidates.append(
+                    (distance_km, -slot.started_frame, attacker_id)
+                )
+            if not candidates:
+                continue
+            _, _, attacker_id = min(candidates)
+            slot_key = (canonical_id, attacker_id)
+            self._weapon_assignments[weapon_id] = slot_key
+            self._slots_with_seen_weapon.add(slot_key)
+
+        # 在途武器一旦出现就开始跟踪；某个发射平台所属的最后一发武器
+        # 消失，即视为该批武器已命中、被拦截或失效，只释放该平台槽位。
+        # 不能再用“目标还有任意武器”保留该目标的全部攻击者槽位。
         for target_id, slots in list(self._slots.items()):
             canonical_id = self._target_aliases.get(target_id, target_id)
-            if canonical_id in in_flight_target_ids:
-                continue
-            if canonical_id in self._targets_with_seen_weapon:
-                self.release_target(canonical_id)
-                continue
-
-            # AttackTarget 成功后允许若干帧等待武器实体形成；超过宽限仍未
-            # 观察到在途武器，认为发射未形成或已立即失效，释放对应攻击者。
             for attacker_id, slot in list(slots.items()):
+                slot_key = (canonical_id, attacker_id)
+                has_in_flight_weapon = any(
+                    assignment == slot_key
+                    for assignment in self._weapon_assignments.values()
+                )
+                if has_in_flight_weapon:
+                    continue
+                if slot_key in self._slots_with_seen_weapon:
+                    self._release_slot(canonical_id, attacker_id)
+                    continue
+
+                # AttackTarget 成功后允许若干帧等待武器实体形成；超过宽限仍
+                # 未观察到属于该攻击者的在途武器，认为发射未形成或已立即
+                # 失效，释放该攻击者。其他平台仍在途的武器不会阻止此判断。
                 if (
                     frame - slot.started_frame
                     >= self.weapon_appearance_grace_frames
                 ):
-                    del slots[attacker_id]
+                    self._release_slot(canonical_id, attacker_id)
             if not slots:
                 self.release_target(target_id)
 
@@ -211,7 +271,6 @@ class EngagementState:
             self.release_target(canonical_id)
             self._interceptors_launched.pop(canonical_id, None)
             self._missile_last_seen.pop(canonical_id, None)
-            self._targets_with_seen_weapon.discard(canonical_id)
 
         # “永久丢失”缺少单独字段，采用 600 帧未再次出现作为保守清理条件。
         for target_id, last_seen in list(self._missile_last_seen.items()):
@@ -311,7 +370,7 @@ class EngagementState:
     def release_attacker(self, attacker_id: str) -> None:
         for target_id, slots in list(self._slots.items()):
             if attacker_id in slots:
-                del slots[attacker_id]
+                self._release_slot(target_id, attacker_id)
             if not slots:
                 self.release_target(target_id)
         for key in list(self._target_missing_frames):
@@ -421,6 +480,7 @@ class EngagementState:
         target_is_missile: bool,
         target_aliases: Sequence[Optional[str]] = (),
         interceptor_count: int = 1,
+        attack_quantity: int = 1,
     ) -> None:
         if (
             not isinstance(interceptor_count, int)
@@ -428,14 +488,20 @@ class EngagementState:
             or interceptor_count <= 0
         ):
             raise ValueError("interceptor_count 必须是正整数")
+        if (
+            not isinstance(attack_quantity, int)
+            or isinstance(attack_quantity, bool)
+            or attack_quantity <= 0
+        ):
+            raise ValueError("attack_quantity 必须是正整数")
         target_id = self.canonical_target_id(target_id)
-        self._targets_with_seen_weapon.discard(target_id)
         slots = self._slots.setdefault(target_id, {})
         slots[attacker_id] = AttackSlot(
             attacker_id=attacker_id,
             target_id=target_id,
             started_frame=int(started_frame),
             target_is_missile=bool(target_is_missile),
+            salvo_quantity=int(attack_quantity),
         )
         self._target_aliases[target_id] = target_id
         for alias in target_aliases:
@@ -453,7 +519,14 @@ class EngagementState:
     def release_target(self, target_id: str) -> None:
         canonical_id = self._target_aliases.get(target_id, target_id)
         self._slots.pop(canonical_id, None)
-        self._targets_with_seen_weapon.discard(canonical_id)
+        for weapon_id, assignment in list(self._weapon_assignments.items()):
+            if assignment[0] == canonical_id:
+                self._weapon_assignments.pop(weapon_id, None)
+        self._slots_with_seen_weapon = {
+            slot_key
+            for slot_key in self._slots_with_seen_weapon
+            if slot_key[0] != canonical_id
+        }
         for key in list(self._target_missing_frames):
             if key[1] == canonical_id:
                 self._target_missing_frames.pop(key, None)
@@ -464,6 +537,20 @@ class EngagementState:
         ]
         for alias in aliases:
             self._target_aliases.pop(alias, None)
+
+    def _release_slot(self, target_id: str, attacker_id: str) -> None:
+        """释放单个发射平台槽位及其武器归属，不影响同目标其他平台。"""
+
+        canonical_id = self._target_aliases.get(target_id, target_id)
+        slots = self._slots.get(canonical_id)
+        if slots is not None:
+            slots.pop(attacker_id, None)
+        slot_key = (canonical_id, attacker_id)
+        self._slots_with_seen_weapon.discard(slot_key)
+        for weapon_id, assignment in list(self._weapon_assignments.items()):
+            if assignment == slot_key:
+                self._weapon_assignments.pop(weapon_id, None)
+        self._target_missing_frames.pop(slot_key, None)
 
     @property
     def slots(self) -> Mapping[str, Mapping[str, AttackSlot]]:

@@ -56,7 +56,6 @@ FEATURE_NAMES: Tuple[str, ...] = (
     "weapon_count_land",
     "weapon_count_submarine",
     "sonobuoy_count",
-    "underwater_sensor_range_km",
     "has_radar_sensor",
     "has_sonar_sensor",
     "fuel_percentage",
@@ -211,26 +210,6 @@ def _has_sensor_capability(
     return False
 
 
-def _max_sensor_radius_km(value: Any) -> float:
-    """读取态势传感器扇区中的最大覆盖半径（单位：km）。"""
-
-    if isinstance(value, Mapping):
-        values: Sequence[Any] = (value,)
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        values = value
-    else:
-        return 0.0
-
-    radii = []
-    for item in values:
-        if not isinstance(item, Mapping):
-            continue
-        radius = _number(item.get("Radius", item.get("radius")), 0.0)
-        if radius > 0.0:
-            radii.append(radius)
-    return max(radii) if radii else 0.0
-
-
 def _aircraft_operating_state(
     unit: Mapping[str, Any],
     is_aircraft: bool,
@@ -323,7 +302,6 @@ class EncodedEntity:
     weapon_count_land: int
     weapon_count_submarine: int
     sonobuoy_count: int
-    underwater_sensor_range_km: float
     has_radar_sensor: bool
     has_sonar_sensor: bool
     fuel_percentage: float
@@ -387,24 +365,6 @@ class EncodedEntity:
             or self.range_strike_submarine_km > 0.0
         )
         return explicit_asw_type or anti_sub_capable or self.sonobuoy_count > 0
-
-    @property
-    def is_sonobuoy(self) -> bool:
-        text = " ".join((self.name, self.unit_name, self.icon_2d)).casefold()
-        return "浮标" in text or "sonobuoy" in text
-
-    @property
-    def is_active_sonobuoy(self) -> bool:
-        """识别态势中的主动声呐浮标；被动标不占主动覆盖范围。"""
-
-        if not self.is_sonobuoy:
-            return False
-        text = " ".join((self.name, self.unit_name, self.icon_2d)).casefold()
-        if "被动" in text or "passive" in text:
-            return False
-        if "主动" in text or "active" in text:
-            return True
-        return self.underwater_sensor_range_km > 0.0
 
     def strike_range_for(self, target: "EncodedEntity") -> float:
         if target.domain is TargetDomain.AIR:
@@ -655,10 +615,6 @@ class EntityEncoder:
                 unit,
                 ("sonobuoyNum", "sonarBuoyNum", "buoyNum", "sonobuoyCount"),
             )
-        underwater_sensor_range_km = _max_sensor_radius_km(
-            unit.get("rangeSensor_UnderWater")
-        )
-
         has_radar_sensor = _has_sensor_capability(
             unit,
             ("hasRadarSensor", "has_radar_sensor", "radarAvailable"),
@@ -757,7 +713,6 @@ class EntityEncoder:
                 float(weapon_count_land),
                 float(weapon_count_submarine),
                 float(sonobuoy_count),
-                underwater_sensor_range_km,
                 float(has_radar_sensor),
                 float(has_sonar_sensor),
                 fuel_percentage,
@@ -809,7 +764,6 @@ class EntityEncoder:
             weapon_count_land=weapon_count_land,
             weapon_count_submarine=weapon_count_submarine,
             sonobuoy_count=sonobuoy_count,
-            underwater_sensor_range_km=underwater_sensor_range_km,
             has_radar_sensor=has_radar_sensor,
             has_sonar_sensor=has_sonar_sensor,
             fuel_percentage=fuel_percentage,
