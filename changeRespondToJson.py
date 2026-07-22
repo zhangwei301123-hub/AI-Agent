@@ -1,5 +1,4 @@
 from google.protobuf.json_format import MessageToDict
-from SimulationControlInstruction_pb2 import  *
 import json
 
 def get_area(response):

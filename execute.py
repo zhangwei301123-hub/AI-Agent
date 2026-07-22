@@ -1,16 +1,19 @@
+import copy
 import time
 
-import SimulationControlInstruction_pb2_grpc
-import SimulationControlInstruction_pb2
 from google.protobuf.empty_pb2 import Empty
 import grpc
-import numpy as np  
-from SimulationControlInstruction_pb2 import IdRequestw, WayPointw,UnitRoutew
-from SimulationControlInstruction_pb2 import *
-from SimulationControlInstruction_pb2_grpc import SimulationServiceStub
+import numpy as np
+from symbolic_reasoning.engine_pb2 import *
+from symbolic_reasoning.engine_pb2_grpc import SimulationServiceStub
+from symbolic_reasoning.execute_actions import execute_actions as _execute_symbolic_actions
+from symbolic_reasoning.entity import EntityEncoder as SymbolicEntityEncoder
+from symbolic_reasoning.live import RpcSituationSource
 
 from changeRespondToJson import *
+from maddpg_live_adapter import legacy_entities_from_symbolic_payload
 import random
+from threading import Lock
 
 IS_TRAIN = True
 def set_is_train(new_flag):
@@ -25,12 +28,9 @@ SCENARIO = "新红蓝对战3.4(增加四种专业)"
 # SCENARIO = "智能体测试4"
 
 # 创建 gRPC 通道
-# channel = grpc.insecure_channel('192.168.1.233:9901')  # 替换为服务端的地址和端口 左边
-# channel = grpc.insecure_channel('192.168.1.231:9901')  # 替换为服务端的地址和端口 本地
-# channel = grpc.insecure_channel('192.168.1.232:9901')  # 替换为服务端的地址和端口  对面
-# channel = grpc.insecure_channel('192.168.1.22:9901')  # 替换为服务端的地址和端口 隔壁
-channel = grpc.insecure_channel('127.0.0.1:50051')  # 替换为服务端的地址和端口
-# channel = grpc.insecure_channel('127.0.0.1:9901')  # 替换为服务端的地址和端口 4090
+RPC_TARGET = '10.2.0.106:50051'
+channel = grpc.insecure_channel(RPC_TARGET)
+
 # 创建客户端
 stub = SimulationServiceStub(channel)
 
@@ -45,10 +45,46 @@ TIME_SPEED_MAP = {
     5:150
 }
 
-from threading import Lock
-
 SPEED_RATE2 = 0
 _SPEED_RATE_LOCK = Lock()
+_LIVE_SOURCE = None
+_LIVE_SOURCE_LOCK = Lock()
+_LIVE_STATE_LOCK = Lock()
+_LAST_LIVE_ENTITIES = None
+_LAST_SYMBOLIC_SITUATION = None
+_LIVE_SITUATION_STALE = False
+
+LIVE_SITUATION_RETRY_ATTEMPTS = 2
+LIVE_SITUATION_RETRY_DELAY_SECONDS = 0.5
+_TRANSIENT_SITUATION_CODES = {
+    grpc.StatusCode.DEADLINE_EXCEEDED,
+    grpc.StatusCode.UNAVAILABLE,
+    grpc.StatusCode.RESOURCE_EXHAUSTED,
+}
+
+
+def _get_live_source(logger=None):
+    global _LIVE_SOURCE
+    with _LIVE_SOURCE_LOCK:
+        if _LIVE_SOURCE is None:
+            _LIVE_SOURCE = RpcSituationSource(
+                rpc_target=RPC_TARGET,
+                timeout=10.0,
+                logger=logger,
+            )
+        return _LIVE_SOURCE
+
+
+def is_live_situation_stale():
+    """最近一次态势读取是否因瞬时 RPC 故障而使用了缓存。"""
+    with _LIVE_STATE_LOCK:
+        return _LIVE_SITUATION_STALE
+
+
+def get_last_symbolic_situation():
+    """返回最近一次成功实时读取所生成的符号态势（只读对象）。"""
+    with _LIVE_STATE_LOCK:
+        return _LAST_SYMBOLIC_SITUATION
 
 def set_speed_rate(new_rate):
     global SPEED_RATE2
@@ -131,7 +167,7 @@ def get_mission_dicts():
     
     return mission_dict
 
-def execute_actions(actions_dict, enemy_ids, probablity=0.7, logger=None):
+def _execute_actions_legacy(actions_dict, enemy_ids, probablity=0.7, logger=None):
     rewards = np.zeros(8)
     '''
         判断指令是否执行成功的规则：
@@ -277,6 +313,26 @@ def execute_actions(actions_dict, enemy_ids, probablity=0.7, logger=None):
     return execute_results, rewards
 
 
+# MADDPG 保持原 8×5 动作格式，但实际下发统一走符号推理已经验收的
+# protobuf 和 AttackTarget 流水线，避免旧、新 proto 在同一进程冲突。
+def execute_actions(actions_dict, enemy_ids, probablity=0.7, logger=None):
+    normalized_actions = {
+        str(entity_id): [
+            [value.item() if isinstance(value, np.generic) else value for value in action]
+            for action in actions
+        ]
+        for entity_id, actions in actions_dict.items()
+    }
+    execute_results, rewards = _execute_symbolic_actions(
+        normalized_actions,
+        list(map(str, enemy_ids)),
+        probablity=probablity,
+        logger=logger,
+        rpc_target=RPC_TARGET,
+    )
+    return execute_results, np.asarray(rewards, dtype=float)
+
+
 
 def reset(logger):
     # pdb.set_trace()
@@ -294,14 +350,7 @@ def reset(logger):
     return response
 
 def reset4test(logger):
-    # stub.loadScenario(ScenarioFileRequest(fileName=SCENARIO, scenarioXml=""))
-    # stub.setTimeCompression(TimeCompressionRequest(timeCompression=SPEED_RATE))
-    # stub.startDedicew(IdRequestw(mdlID=""))
-    # time.sleep(1)
-    response = stub.getSituation(Empty())
-    # 返回的是所有的单装信息
-    response = get_situaction(response) #返回场景的 json化的 所有单装信息
-    # print("================RESET================")
+    response = get_Situaction4test(logger)
     logger.info("================RESET================")
     return response
 
@@ -313,8 +362,64 @@ def get_Situaction(logger):
     return response
 
 def get_Situaction4test(logger):
-    response=stub.getSituation(Empty())
-    response=get_situaction(response) #返回场景的 json化的 所有单装信息
+    global _LAST_LIVE_ENTITIES, _LAST_SYMBOLIC_SITUATION, _LIVE_SITUATION_STALE
+
+    with _LIVE_STATE_LOCK:
+        cached_response = copy.deepcopy(_LAST_LIVE_ENTITIES)
+
+    # 运行过程中已有缓存时，一次超时后直接进入安全等待；启动阶段没有缓存，
+    # 则允许再试一次，避免服务端偶发抖动导致程序无法启动。
+    max_attempts = 1 if cached_response is not None else LIVE_SITUATION_RETRY_ATTEMPTS
+    last_error = None
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            payload = _get_live_source(logger).fetch_payload()
+            symbolic_situation = SymbolicEntityEncoder().encode(payload)
+            response = legacy_entities_from_symbolic_payload(
+                payload,
+                situation=symbolic_situation,
+            )
+            break
+        except grpc.RpcError as exc:
+            if exc.code() not in _TRANSIENT_SITUATION_CODES:
+                raise
+            last_error = exc
+            if attempt < max_attempts:
+                if logger is not None:
+                    logger.warning(
+                        '[MADDPG实时态势] RPC暂时失败 code=%s，%.1f秒后重试(%s/%s)',
+                        exc.code().name,
+                        LIVE_SITUATION_RETRY_DELAY_SECONDS,
+                        attempt,
+                        max_attempts,
+                    )
+                time.sleep(LIVE_SITUATION_RETRY_DELAY_SECONDS)
+
+    if response is None:
+        if cached_response is None:
+            # 首帧没有可安全使用的历史态势，保留原始 gRPC 状态码给调用方。
+            raise last_error
+        with _LIVE_STATE_LOCK:
+            _LIVE_SITUATION_STALE = True
+        if logger is not None:
+            logger.warning(
+                '[MADDPG实时态势] RPC暂时失败 code=%s，使用最近成功态势；恢复前暂停下发动作',
+                last_error.code().name,
+            )
+        return cached_response
+
+    with _LIVE_STATE_LOCK:
+        _LAST_LIVE_ENTITIES = copy.deepcopy(response)
+        _LAST_SYMBOLIC_SITUATION = symbolic_situation
+        _LIVE_SITUATION_STALE = False
+    if logger is not None:
+        own_count = sum(entity.get('isCanManaged', False) for entity in response)
+        target_count = sum(not entity.get('isCanManaged', False) for entity in response)
+        logger.debug(
+            '[MADDPG实时态势] source=GetThreeSituation(red-view) entities=%s own=%s targets=%s',
+            len(response), own_count, target_count,
+        )
     return response
 
 def start(logger):

@@ -2,6 +2,12 @@ from engagement_rules import *
 from utils import *
 import math
 from execute  import *
+from maddpg_rule_guard import (
+    AttackTargetInput,
+    DEFAULT_ATTACK_QUANTITY,
+    decide_attack,
+    sonobuoy_deployment_allowed,
+)
 
 def _rad_diff(a, b):
     """最小角差 ∈ [0, π]
@@ -521,123 +527,101 @@ def handle_attack_decision(actions, now_state, i, entity_idx, entity_id, our_ent
                            enemy_ids, enemy_indices, enemy_coordinate, actions_dict, not_aim_count, 
                            out_of_range_count, actor_property, list_actions_for_entity, raw_data,
                            our_entity_coordinate, sub2sub_max_range_nm, logger, urgent_flag, no_enemy_count):
-    attack_prob = float(actions[:, i, :][4, 0]) # 提取攻击概率
-    target_idx = int(actions[:, i, :][4, 1]) # 提取打击actor 攻击的敌方实体idx
+    def disable_attack(reason):
+        actions[:, i, :][4, 0] = np.float32(0.01)
+        list_actions_for_entity[4][0] = np.float32(0.01)
+        list_actions_for_entity[4][1] = reason
 
-    own_raw     = raw_data[entity_idx]                       # 我方某个实体的全部信息
-    own_targets = set(own_raw.get('unitTarget', []))         # 可以打击的类型 e.g. [0,1,2] 
-    wpn_info    = own_raw.get('weaponNumber', {})
-    wpn_air_left    = wpn_info.get('airNum', 0)
-    wpn_sub_left    = wpn_info.get('subNum', 0)
-    wpn_ship_left   = wpn_info.get('shipNum', 0)
+    own_raw = raw_data[entity_idx]
+    inventory = own_raw.get('weaponNumber', {})
+    if not isinstance(inventory, dict):
+        inventory = {}
+    enough_ammo = any(float(inventory.get(key, 0) or 0) > 0 for key in ('airNum', 'subNum', 'shipNum'))
+    oil = float(own_raw.get('logisticStates', {}).get('oil', -1) or 0)
+    fuel_low = 0 < oil <= 0.20
+    jammed = int(own_raw.get('innerstates', {}).get('IsJamReaction', 0) or 0) > 0
 
-    enough_ammo = (
-        (wpn_air_left  > 0) or
-        (wpn_sub_left  > 0) or
-        (wpn_ship_left > 0)
+    if our_entity_indices[i] not in our_can_attack_ids or not enough_ammo:
+        disable_attack('平台没有可用的对应域武器')
+        return not_aim_count, out_of_range_count, no_enemy_count
+    if fuel_low or jammed:
+        disable_attack('燃油或安全条件不满足')
+        return not_aim_count, out_of_range_count, no_enemy_count + 1
+
+    own_type = int(now_state['encoded_data'][entity_idx, 13])
+    own_alt = float(now_state['encoded_data'][entity_idx, 5])
+    own_heading = float(now_state['encoded_data'][entity_idx, 4])
+    cur_lon, cur_lat = our_entity_coordinate[i]
+    target_inputs = []
+    for target_position, enemy_idx_abs in enumerate(enemy_indices):
+        if target_position >= len(enemy_ids) or target_position >= len(enemy_coordinate):
+            continue
+        tgt_lon, tgt_lat = enemy_coordinate[target_position]
+        target_inputs.append(AttackTargetInput(
+            index=target_position,
+            target_id=str(enemy_ids[target_position]),
+            raw=raw_data[enemy_idx_abs],
+            entity_type=int(now_state['encoded_data'][enemy_idx_abs, 13]),
+            altitude_m=float(now_state['encoded_data'][enemy_idx_abs, 5]),
+            longitude=float(tgt_lon),
+            latitude=float(tgt_lat),
+        ))
+
+    decision = decide_attack(
+        own_raw=own_raw,
+        own_type=own_type,
+        own_altitude_m=own_alt,
+        own_heading_deg=own_heading,
+        own_longitude=float(cur_lon),
+        own_latitude=float(cur_lat),
+        targets=target_inputs,
     )
+    if logger is not None:
+        logger.debug(
+            '[MADDPG规则] entity=%s conclusion=%s rule=%s target=%s reason=%s',
+            entity_id,
+            decision.conclusion,
+            decision.rule_id,
+            decision.candidate.target_id if decision.candidate else None,
+            decision.reason,
+        )
 
-    if our_entity_indices[i] in our_can_attack_ids and enough_ammo:
-        if (raw_data[entity_idx].get('logisticStates', {}).get('oil', -1) > 0.1 or raw_data[entity_idx].get('logisticStates', {}).get('oil', -1) == 0):
-            if target_idx < len(enemy_ids):
-                # 1.判断实体能不能打该目标
-                own_type = int(now_state['encoded_data'][entity_idx, 13])      # 我方实体类型  0飞机  1舰艇 2潜艇 3设施 4武器导弹 5其他
-                own_alt  = int(now_state['encoded_data'][entity_idx, 5])       # 我方高度
-                tgt_type = int(now_state['encoded_data'][enemy_indices[target_idx], 13])   # 敌方实体类型
-                tgt_alt  = int(now_state['encoded_data'][enemy_indices[target_idx], 5])    # 敌方高度
+    candidate = decision.candidate
+    if decision.conclusion == 'REQUEST_ATTACK' and candidate is not None:
+        probability = max(float(actions[:, i, :][4, 0]), 0.81)
+        actions[:, i, :][4, 0] = np.float32(probability)
+        list_actions_for_entity[4][0] = np.float32(probability)
+        list_actions_for_entity[4][1] = candidate.target_id
+        list_actions_for_entity[4][2] = 0.0
+        list_actions_for_entity[4][3] = 0.0
+        # 新 AttackTarget 接口使用该字段作为数量；旧接口会安全忽略数值数量。
+        list_actions_for_entity[4][4] = int(decision.quantity or DEFAULT_ATTACK_QUANTITY)
+        return not_aim_count, out_of_range_count, no_enemy_count
 
-                tgt_raw = raw_data[enemy_indices[target_idx]]  # 敌方实体
-                tgt_type2 = tgt_raw.get('contactType', -1)  # 0/1/2/3… 属于可打击类型中的那种
-
-                # allowed_types = ENGAGEMENT_RULES.get(tgt_type, [])
-                if tgt_type2 not in own_targets:
-                    actions[:, i, :][4, 0] = 0.01
-                    list_actions_for_entity[4][0] = 0.01         # 把 AttackActor 的 prob 压到极低
-                    actions_dict[entity_id] = list_actions_for_entity
-                    return not_aim_count, out_of_range_count, no_enemy_count
-
-                # if own_type not in allowed_types: # 如果不能打，就直接跳过该实体的攻击判定
-                #     pass
-
-                if attack_prob < 0.75:
-                    actions[:, i, :][4, 0] = 0.75
-                    
-                # 2.根据敌方高度 -> 调整我方攻击的高度
-                attack_alt_type = calculate_attack_altitude(own_type, tgt_alt)
-
-                # 当前坐标 & 目标坐标
-                cur_lon, cur_lat = our_entity_coordinate[i]
-                tgt_lon, tgt_lat = enemy_coordinate[target_idx]
-                alt_diff = abs(own_alt - tgt_alt)
-                # alt_diff = 0
-                attack_distant = geo_distance(cur_lon, cur_lat,tgt_lon, tgt_lat, alt_diff) # 返回两点之间的距离
-
-                # 3.当前坐标与目标坐标的距离是否小于可攻击距离
-                within_attack_range, chase_allowed = check_attack_range(now_state, i, entity_idx, tgt_alt, attack_distant,
-                                                                        own_raw, own_type, tgt_type, tgt_type2)
-
-                # 4.根据我方yaw判定我方是否对准
-                within_aim_range = check_aim_range(now_state, i, entity_idx, tgt_lon, tgt_lat, cur_lon, cur_lat, own_type)
-
-                # 5.处理追击逻辑
-                handle_chase(within_aim_range, within_attack_range, enemy_ids, target_idx, tgt_lon, tgt_lat, cur_lon, cur_lat,
-                     chase_allowed, list_actions_for_entity, actions, i, attack_alt_type, not_aim_count, out_of_range_count,
-                     urgent_flag, tgt_type, own_type, attack_distant)
-
-
-
-
-                # 6. 寻找在攻击范围内最近的敌方目标
-                closest_enemy_j = -1      # 在enemy_ids列表中的索引
-                min_dist = float('inf')   # 最小距离
-                
-                # 遍历所有已知的敌方单位
-                for j, enemy_idx_abs in enumerate(enemy_indices):
-                    tgt_raw = raw_data[enemy_idx_abs]
-                    tgt_type2 = tgt_raw.get('contactType', -1)
-
-                    # # 不检查了  直接开干 万一有能打但是给的信息错误的  
-                    #  类型检查：我方是否能打该类型的敌方单位
-                    # if tgt_type2 not in own_targets:
-                    #     continue # 不能打，跳过下一个
-                    tgt_lon, tgt_lat = enemy_coordinate[j]
-                    tgt_alt = int(now_state['encoded_data'][enemy_idx_abs, 5])
-                    tgt_type = int(now_state['encoded_data'][enemy_idx_abs, 13])
-                    alt_diff = abs(own_alt - tgt_alt)
-                    distance = geo_distance(cur_lon, cur_lat, tgt_lon, tgt_lat, alt_diff)
-                    within_range, _ = check_attack_range(now_state, i, entity_idx, tgt_alt, distance, own_raw, own_type, tgt_type, tgt_type2)
-                    if within_range:
-                        if distance < min_dist:
-                            min_dist = distance
-                            closest_enemy_j = j
-                if closest_enemy_j != -1:
-                    actions[:, i, :][4, 0] = 0.90
-                    if closest_enemy_j < len(enemy_ids):
-                        closest_enemy_id = enemy_ids[closest_enemy_j]
-                        list_actions_for_entity[4][0] = 0.81
-                        list_actions_for_entity[4][4] = closest_enemy_id
-                        actions_dict[entity_id] = list_actions_for_entity
-
-            else:
-                # 超出索引范围，打击无效
-                # print('target_idx, len(enemy_ids)', target_idx, len(enemy_ids))
-                logger.warning(f'target_idx: {target_idx}, len(enemy_ids): {len(enemy_ids)}')
-                list_actions_for_entity[4][1] = '超出索引范围，打击无效'
-                actions[:, i, :][4, 0] = 0.01
-                list_actions_for_entity[4][0] = 0.01
-                no_enemy_count += 1
+    disable_attack(decision.reason)
+    if decision.conclusion in ('CHASE_TO_RANGE', 'CHASE_AND_ALIGN') and candidate is not None:
+        if urgent_flag:
+            return not_aim_count, out_of_range_count, no_enemy_count
+        attack_altitude = calculate_attack_altitude(own_type, candidate.altitude_m)
+        direction = get_waypoint_index(candidate.longitude - cur_lon, candidate.latitude - cur_lat)
+        actions[:, i, :][2][0] = np.float32(0.8)
+        actions[:, i, :][2][1] = np.float32(direction)
+        actions[:, i, :][2][3] = np.float32(5)
+        actions[:, i, :][2][4] = np.float32(attack_altitude)
+        actions[:, i, :][3][0] = np.float32(0.01)
+        list_actions_for_entity[2][0] = np.float32(0.8)
+        list_actions_for_entity[2][1] = candidate.longitude
+        list_actions_for_entity[2][2] = candidate.latitude
+        list_actions_for_entity[2][3] = np.float32(5)
+        list_actions_for_entity[2][4] = np.float32(attack_altitude)
+        list_actions_for_entity[3][0] = np.float32(0.01)
+        if decision.conclusion == 'CHASE_AND_ALIGN':
+            not_aim_count += 1
         else:
-            list_actions_for_entity[4][1] = '油量错误油量错误'
-            actions[:, i, :][4, 0] = 0.01
-            list_actions_for_entity[4][0] = 0.01
-            no_enemy_count += 1
-
+            out_of_range_count += 1
     else:
-        # 该实体无法发动打击命令，不执行
-        list_actions_for_entity[4][0] = 0.01
-        list_actions_for_entity[4][1] = '该实体无法发动打击命令，不执行'
-        actions[:, i, :][4, 0] = 0.01
-    
+        no_enemy_count += 1
+
     return not_aim_count, out_of_range_count, no_enemy_count
 
 def calculate_attack_altitude(own_type, tgt_alt):
@@ -815,33 +799,37 @@ def handle_chase(within_aim_range, within_attack_range, enemy_ids, target_idx, t
             
 
 def handle_deploy(list_actions_for_entity, actions, i, entity_idx, our_entity_coordinate, raw_data, mission_dicts, altitude, actor_property):
-    attack_point_list = []
     deploy_action = list_actions_for_entity[6]
-        
-    mission_id = raw_data[entity_idx]['missionId']
-    normal = False
-    if mission_id not in mission_dicts.keys():
-        normal = True
-        # print(f"Invalid mission id: {mission_id}")
-    else:
-        attack_point_list = build_convex_hull(mission_dicts.get(mission_id)['area_points'])
+    if deploy_action[0] <= actor_property:
+        return 0
 
-    if normal:
+    own_raw = raw_data[entity_idx]
+    mission_id = own_raw.get('missionId')
+    mission = mission_dicts.get(mission_id, {})
+    area_points = mission.get('area_points', [])
+    cur_lon, cur_lat = our_entity_coordinate[i]
+    allowed = sonobuoy_deployment_allowed(
+        own_raw,
+        cur_lon,
+        cur_lat,
+        altitude,
+        area_points,
+    )
+    if not allowed:
         list_actions_for_entity[6][0] = np.float32(0.01)
         actions[:, i, :][6][0] = np.float32(0.01)
         return 1
 
-    if deploy_action[0] > actor_property:
-        cur_lon, cur_lat = our_entity_coordinate[i]
-        if is_point_in_area((cur_lon, cur_lat), attack_point_list) and altitude > 150 * 0.3048: # 实体在在区域内 并且 实体高度在150英尺以内
-            return 0
-
-        else: # 实体不在交战在区域内 
-            list_actions_for_entity[6][0] = np.float32(0.01)
-            actions[:, i, :][6][0] = np.float32(0.01)
-            return 1
-    else:
-        return 0
+    # 与符号推理一致：浅层主动声呐浮标，并禁止同帧巡逻航路覆盖部署。
+    list_actions_for_entity[6][0] = np.float32(max(float(deploy_action[0]), 0.81))
+    list_actions_for_entity[6][1] = np.float32(1.0)
+    list_actions_for_entity[6][2] = np.float32(1.0)
+    actions[:, i, :][6][0] = list_actions_for_entity[6][0]
+    actions[:, i, :][6][1] = np.float32(1.0)
+    actions[:, i, :][6][2] = np.float32(1.0)
+    list_actions_for_entity[2][0] = np.float32(0.01)
+    actions[:, i, :][2][0] = np.float32(0.01)
+    return 0
 
 MAX_ON_AIR_NUM = 5
 def handle_take_off_num_rule(actions, now_state, i, entity_idx, entity_id, aircraft_unitcategory_num, actor_property):

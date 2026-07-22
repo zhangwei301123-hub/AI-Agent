@@ -150,6 +150,30 @@ MAX_TARGETS = 300
 # encoded.shape()= [know_entities,38]
 # mask.shape()=[know_entities] [1,1,1,1] 有几个实体，就在该位置上设为1
 
+def normalize_entity_type(mdl_type):
+    """将不同态势接口的实体类型名称统一为 MADDPG 使用的类型编号。"""
+    value = str(mdl_type or '').strip().upper()
+
+    # 导弹名称可能同时包含 AIR/SURFACE，必须优先于平台类型判断。
+    if any(alias in value for alias in ('WEAPON', 'MISSILE', 'TORPEDO', 'MUNITION')) \
+            or any(alias in value for alias in ('导弹', '鱼雷', '武器')):
+        return 4
+    # SUBSURFACE 包含 SURFACE，必须先判断水下平台。
+    if any(alias in value for alias in ('SUBMARINE', 'SUBSURFACE')) \
+            or any(alias in value for alias in ('潜艇', '水下舰艇')):
+        return 2
+    if value == 'AIR' or 'AIRCRAFT' in value \
+            or any(alias in value for alias in ('飞机', '航空器')):
+        return 0
+    if any(alias in value for alias in ('SHIP', 'SURFACE', 'VESSEL', 'CARRIER')) \
+            or any(alias in value for alias in ('水面舰艇', '舰船', '军舰', '航母')):
+        return 1
+    if value == 'LAND' or 'FACILITY' in value \
+            or any(alias in value for alias in ('地面设施', '设施')):
+        return 3
+    return 5
+
+
 class EntityEncoder:
     '''
     对单个实体进行编码
@@ -216,20 +240,8 @@ class EntityEncoder:
             encoded[entity_count, 11] = velocity.get('vy', -1)
             encoded[entity_count, 12] = velocity.get('vz', -1)
 
-            # [13] 实体类型（0=飞机，1=舰船，2=其他(潜艇)）
-            mdl_type = entity.get('mdlType', '').upper()  # 统一转大写
-            if 'AIRCRAFT' in mdl_type:
-                encoded[entity_count, 13] = 0
-            elif 'SHIP' in mdl_type:
-                encoded[entity_count, 13] = 1
-            elif 'SUBMARINE' in mdl_type: 
-                encoded[entity_count, 13] = 2
-            elif 'FACILITY' in mdl_type:
-                encoded[entity_count, 13] = 3
-            elif 'WEAPON' in mdl_type:
-                encoded[entity_count, 13] = 4
-            else :
-                encoded[entity_count, 13] = 5
+            # [13] 实体类型（0=飞机，1=舰船，2=潜艇，3=设施，4=武器，5=其他）
+            encoded[entity_count, 13] = normalize_entity_type(entity.get('mdlType'))
 
             # [14] 干扰状态
             inner = entity.get('innerstates', {})
@@ -385,7 +397,13 @@ class SelfStateEncoder(nn.Module):
         return self.self_encoder(from_global_feat) # [batch, hidden_dim]
 
 
-def is_can_attack(encoded_data, mask, target_side=1, allowed_types=[0, 1]):
+def is_can_attack(
+    encoded_data,
+    mask,
+    target_side=1,
+    allowed_types=[0, 1],
+    require_manageable=None,
+):
     """
     返回【本帧】允许执行 AttackTargetActor 的实体索引列表
     - 只有目标阵营 (target_side) 的实体才会被考虑
@@ -397,10 +415,14 @@ def is_can_attack(encoded_data, mask, target_side=1, allowed_types=[0, 1]):
     if allowed_types is None:
         allowed_types = [0, 1, 2]
 
+    if require_manageable is None:
+        # 兼容旧调用：旧工程默认控制蓝方(0)。新实时链路会显式传参。
+        require_manageable = target_side == 0
+
     can_attack = []
     for i in range(encoded_data.shape[0]):
         if mask[i] == 1:
-            if target_side == 0 and encoded_data[i, -1] == 0: # 保证实体是我方时，要是可以操纵的实体
+            if require_manageable and encoded_data[i, -1] == 0:
                 continue
             force_side = int(encoded_data[i, 0])
             entity_type = int(encoded_data[i, 13])  # 大类型
@@ -416,17 +438,28 @@ def is_can_attack(encoded_data, mask, target_side=1, allowed_types=[0, 1]):
     return can_attack
 
 
-def get_env_entity_ids(encoded_data, mask, target_side=1, allowed_types=[0, 1], think_hp=False):
+def get_env_entity_ids(
+    encoded_data,
+    mask,
+    target_side=1,
+    allowed_types=[0, 1],
+    think_hp=False,
+    require_manageable=None,
+):
     '''
      获取指定阵营、类型的实体ID列表 还得限制血量为正数
      将EntityEncoder的30个数据（EntityEncoder） 获得A阵营的所有实体的索引
     '''
     if allowed_types is None:
         allowed_types = [0, 1]
+    if require_manageable is None:
+        # 兼容旧调用：旧工程默认控制蓝方(0)。新实时链路会显式传参。
+        require_manageable = target_side == 0
+
     filtered_index = []
     for i in range(encoded_data.shape[0]):
         if mask[i] == 1:
-            if target_side == 0 and encoded_data[i, -1] == 0: # 保证实体是我方时，要是可以操纵的实体
+            if require_manageable and encoded_data[i, -1] == 0:
                 continue
             force_side = int(encoded_data[i, 0])
             hp = encoded_data[i, 1]
@@ -492,7 +525,13 @@ def get_velocity_from_encoded_data(encoded_data,
     return speeds
 
 
-def get_coordinate_from_encoded_data(encoded_data, mask, target_side=1, allowed_types=[0, 1]):
+def get_coordinate_from_encoded_data(
+    encoded_data,
+    mask,
+    target_side=1,
+    allowed_types=[0, 1],
+    require_manageable=None,
+):
     """
     获取指定阵营、指定类型、血量>0 的实体的坐标列表
     输入:
@@ -503,10 +542,14 @@ def get_coordinate_from_encoded_data(encoded_data, mask, target_side=1, allowed_
     返回:
         coords: List[Tuple]，实体坐标 (lon, lat)
     """
+    if require_manageable is None:
+        # 兼容旧调用：旧工程默认控制蓝方(0)。新实时链路会显式传参。
+        require_manageable = target_side == 0
+
     coords = []
     for i in range(encoded_data.shape[0]):
         if mask[i] == 1:
-            if target_side == 0 and encoded_data[i, -1] == 0: # 保证实体是我方时，要是可以操纵的实体
+            if require_manageable and encoded_data[i, -1] == 0:
                 continue
             force_side = int(encoded_data[i, 0])     # 阵营
             entity_type = int(encoded_data[i, 13])   # 类型

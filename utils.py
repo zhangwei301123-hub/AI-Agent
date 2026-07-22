@@ -13,6 +13,7 @@ import hashlib
 from typing import Optional, Tuple
 
 from entity import get_env_entity_ids, get_coordinate_from_encoded_data
+from maddpg_rule_guard import missile_points_at_entity
 
 # 根据你的 encoded_data 列含义自行调整
 COL_TYPE = 13  # 0=Aircraft 1=Ship 2=Sub …
@@ -254,17 +255,11 @@ def choose_evade_direction(missile_yaw_deg):
 
     # 计算横向90°方向的索引
     right_index = (direction_index + 2) % 8  # 顺时针90度
-    left_index = (direction_index + 6) % 8  # 逆时针90度
-
-    # 随机选择左或右
-    if random.random() < 0.9999:
-        return right_index
-    else:
-        return left_index
+    return right_index
 
 
-OUR_SIDE = 0
-ENEMY_SIDE = 1
+OUR_SIDE = 1
+ENEMY_SIDE = 0
 
 # from HG 的版本
 # def find_incoming_threats(encoded_data: np.ndarray,
@@ -398,18 +393,22 @@ def find_incoming_threats(encoded_data: np.ndarray,
     # ---- 1. 筛索引 ----
     our_idxs = get_env_entity_ids(encoded_data, mask,
                                   target_side=our_side,
-                                  allowed_types=[0, 1, 2])  # 我方可控实体
+                                  allowed_types=[0, 1, 2],
+                                  require_manageable=True)  # 我方可控实体
     missile_idxs = get_env_entity_ids(encoded_data, mask,
                                       target_side=enemy_side,
-                                      allowed_types=[missile_type])  # 敌方导弹实体的索引
+                                      allowed_types=[missile_type],
+                                      require_manageable=False)  # 敌方导弹实体的索引
     if not missile_idxs:
         return {}
 
     # ---- 2. 坐标 ----
     our_coords = get_coordinate_from_encoded_data(
-        encoded_data, mask, target_side=our_side, allowed_types=[0, 1, 2])
+        encoded_data, mask, target_side=our_side, allowed_types=[0, 1, 2],
+        require_manageable=True)
     missile_coords = get_coordinate_from_encoded_data(
-        encoded_data, mask, target_side=enemy_side, allowed_types=[missile_type])
+        encoded_data, mask, target_side=enemy_side, allowed_types=[missile_type],
+        require_manageable=False)
 
     # ---- 3. 初始化结果 ----
     threats = {raw_data[i]['mdlID']: [] for i in our_idxs}
@@ -427,13 +426,24 @@ def find_incoming_threats(encoded_data: np.ndarray,
                 dx = our_coord[0] - m_coord[0]
                 dy = our_coord[1] - m_coord[1]
                 bearing = math.atan2(dx, dy) % (2 * math.pi)
-                
-
-                threats[our_id].append({
-                    'missile_id': raw_lookup[m_idx]['mdlID'],  
-                    'distance': dist,
-                    'bearing': bearing
-                })
+                missile_raw = raw_lookup[m_idx]
+                if missile_points_at_entity(
+                    missile_raw=missile_raw,
+                    own_id=our_id,
+                    missile_longitude=m_coord[0],
+                    missile_latitude=m_coord[1],
+                    own_longitude=our_coord[0],
+                    own_latitude=our_coord[1],
+                ):
+                    attitude = missile_raw.get('attitude', {})
+                    missile_heading = attitude.get('yaw') if isinstance(attitude, dict) else None
+                    if missile_heading is not None:
+                        bearing = math.radians(float(missile_heading)) % (2 * math.pi)
+                    threats[our_id].append({
+                        'missile_id': missile_raw['mdlID'],
+                        'distance': dist,
+                        'bearing': bearing
+                    })
     return threats
 
 
@@ -594,12 +604,14 @@ def get_coord(encoded_data: np.ndarray,
     our_idxs = get_env_entity_ids(
         encoded_data, mask,
         target_side=our_side,
-        allowed_types=[0, 1, 2]
+        allowed_types=[0, 1, 2],
+        require_manageable=True
     )
     our_coords = get_coordinate_from_encoded_data(
         encoded_data, mask,
         target_side=our_side,
-        allowed_types=[0, 1, 2]
+        allowed_types=[0, 1, 2],
+        require_manageable=True
     )
 
     # 2) 在 raw_data 里匹配 mdlID，然后返回对应的坐标

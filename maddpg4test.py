@@ -30,50 +30,24 @@ from utils import bootstrap_recon, evade_missiles, geo_distance, log_entity_acti
 from latch_manager import *
 from engagement_rules import ENGAGEMENT_RULES,MAX_RANGE,DIRECTION_OFFSET
 
-from  execute import TIME_SPEED_MAP, SPEED_RATE
+from  execute import TIME_SPEED_MAP, SPEED_RATE, get_speed_rate
 
 from actor_rules import *
 from collections import defaultdict
+from maddpg_rule_guard import (
+    DEFAULT_ATTACK_QUANTITY,
+    MISSILE_EVADE_DISTANCE_M,
+)
+from symbolic_reasoning.state import (
+    EngagementState,
+    MAX_INTERCEPTORS_PER_MISSILE,
+)
 
 
 
 
-# 改成常量，方便以后调
-ATTACK_CD_SEC   = 1800          # 每对 attacker→target 的 CD
-MAX_PAR_ATTACK  = 3            # 同一 target 允许并发的攻击者数
-class AttackThrottle:
-    """
-    限制同一 target 同时被多少个 attacker 攻击；
-    并给「同一对 attacker→target」加冷却（单位：帧）。
-    """
-    def __init__(self, cd_sec=180, max_parallel=3):
-        self.cd_steps = TIME_SPEED_MAP[get_speed_rate()]
-        self.max_parallel = max_parallel
-        # {target_id: {attacker_id: 剩余CD}}
-        # ★ 全局攻击表：{target_id: {attacker_id: 剩余CD}}
-        self.table: Dict[str, Dict[str, int]] = {}
-
-    # 每帧调用，所有 CD-1，≤0 时自动删除
-    def tick(self):
-        for tgt in list(self.table.keys()):
-            for atk in list(self.table[tgt].keys()):
-                self.table[tgt][atk] -= self.cd_steps
-                if self.table[tgt][atk] <= 0:
-                    self.table[tgt].pop(atk, None)
-            if not self.table[tgt]:
-                self.table.pop(tgt, None)
-
-    # 判断某 attacker 本帧能否打这个 target
-    def can_attack(self, attacker_id: str, target_id: str) -> bool:
-        attackers = self.table.get(target_id, {})
-        if attacker_id in attackers:               # 自己还在 CD 内
-            self.register(attacker_id, target_id)
-            return True
-        return len(attackers) < self.max_parallel  # 并发数是否超限 T表示能攻击 有攻击实体的额度
-
-    # 记录一次新的攻击
-    def register(self, attacker_id: str, target_id: str):
-        self.table.setdefault(target_id, {})[attacker_id] = self.cd_steps
+# 攻击槽位优先根据在途武器生命周期释放；100帧仅作为信息缺失时的最终兜底。
+ATTACK_SLOT_TIMEOUT_FRAMES = 100
 
 ACTOR_PROBABILITY = 0.6
 
@@ -93,13 +67,14 @@ ATTACK_CAPABLE_AIRCRAFT_TYPES = {0, 1, 2, 4, 6, 7, 13}
 
 SUB2SUB_MAX_RANGE_NM = 14   # 潜艇对潜艇最大允许射程 (海里)
 
-OUR_SIDE = 0
-ENEMY_SIDE = 1
+# 与符号推理实时接口一致：默认控制红方，并使用红方视角的 Contact ID。
+OUR_SIDE = 1
+ENEMY_SIDE = 0
 
 BUFFER_CAP = 50000
 
 
-MISSILE_THREAT_DIST = 300000
+MISSILE_THREAT_DIST = MISSILE_EVADE_DISTANCE_M
 
 def sample_direction():
     rd = random.random()
@@ -317,7 +292,7 @@ class MADDPG(nn.Module):
 
         for i in range(encoded_data.shape[0]):
             # 获取当前帧中需要关注的实体索引
-            filtered_index = get_env_entity_ids(encoded_data[i].cpu().numpy(), mask[i].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2]) # 按需求添加 modify
+            filtered_index = get_env_entity_ids(encoded_data[i].cpu().numpy(), mask[i].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2], require_manageable=True) # 按需求添加 modify
             len_entities.append(len(filtered_index))
             single_frame_all_our_entities = []
         
@@ -335,7 +310,7 @@ class MADDPG(nn.Module):
             all_frame_all_our_entities.append(single_frame_all_our_entities)
 
             # 获取当前帧中所有目标实体的索引
-            enemies_index = get_env_entity_ids(encoded_data[i].cpu().numpy(), mask[i].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4]) # 按需求添加 modify
+            enemies_index = get_env_entity_ids(encoded_data[i].cpu().numpy(), mask[i].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4], require_manageable=False) # 按需求添加 modify
             single_frame_all_enemies = []
             for index in enemies_index:
                 single_frame_all_enemies.append(self.self_encoder(attn_output[i][index]))
@@ -349,11 +324,13 @@ class MADDPG(nn.Module):
             our_coords = get_coordinate_from_encoded_data(encoded_data[i].cpu().numpy(),
                                                      mask[i].cpu().numpy(),
                                                      target_side=OUR_SIDE,
-                                                     allowed_types=[0, 1, 2])
+                                                     allowed_types=[0, 1, 2],
+                                                     require_manageable=True)
             enemy_coords = get_coordinate_from_encoded_data(encoded_data[i].cpu().numpy(),
                                                        mask[i].cpu().numpy(),
                                                        target_side=ENEMY_SIDE,
-                                                       allowed_types=[0, 1, 2, 4])
+                                                       allowed_types=[0, 1, 2, 4],
+                                                       require_manageable=False)
             enemy_speed = get_velocity_from_encoded_data(encoded_data[i].cpu().numpy(),
                                            mask[i].cpu().numpy(),
                                            target_side=ENEMY_SIDE,
@@ -815,7 +792,10 @@ class SimulatedEnv:
         self.latch = CommandLatch0()
         # self.tick_thread = None
 
-        self.attack_throttle = AttackThrottle(cd_sec=ATTACK_CD_SEC, max_parallel=MAX_PAR_ATTACK)
+        self.engagement_state = EngagementState(
+            timeout_frames=ATTACK_SLOT_TIMEOUT_FRAMES,
+        )
+        self.engagement_frame = 0
 
 
     def reset_entity_action_frame_link(self):
@@ -839,6 +819,8 @@ class SimulatedEnv:
         self.aircraft_unitcategory_num = defaultdict(int)
 
         self.latch = CommandLatch0()
+        self.engagement_state.reset()
+        self.engagement_frame = 0
 
         # self.stop()
         # self.latch = CommandLatch()
@@ -893,18 +875,18 @@ class SimulatedEnv:
         number_urgent = len(urgent_flags)
 
         #我方全部可以执行动作的实体的索引
-        our_entity_indices = get_env_entity_ids(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2])
-        our_can_attack_ids = is_can_attack(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2])
+        our_entity_indices = get_env_entity_ids(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2], require_manageable=True)
+        our_can_attack_ids = is_can_attack(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2], require_manageable=True)
         #我方全部实体的ID
         our_entity_ids = [ entity.get('mdlID') for i ,entity in enumerate(self.raw_data) if i in our_entity_indices]
         #我方实体的坐标
-        our_entity_coordinate = get_coordinate_from_encoded_data(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2])
+        our_entity_coordinate = get_coordinate_from_encoded_data(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2], require_manageable=True)
 
         #敌方全部实体的索引
-        enemy_indices = get_env_entity_ids(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4])
+        enemy_indices = get_env_entity_ids(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4], require_manageable=False)
         #敌方全部实体的ID 
         enemy_ids = [ entity.get('mdlID') for i ,entity in enumerate(self.raw_data) if i in enemy_indices]
-        enemy_coordinate = get_coordinate_from_encoded_data(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4])
+        enemy_coordinate = get_coordinate_from_encoded_data(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4], require_manageable=False)
         actions_dict = {}
 
         get_aircraft_on_air_num(our_entity_indices, now_state, self.aircraft_unitcategory_num)
@@ -968,21 +950,92 @@ class SimulatedEnv:
                     actions_dict[ent_id][actor_idx][0] = 0.01
 
 
-        self.attack_throttle.tick()              # 1) 先全体 -1
-        
+        # 使用符号推理的完整交战状态机跟踪在途武器。成功发射后的槽位会在
+        # 对应武器命中、被拦截或消失后释放；100帧仅作为最终兜底。
+        self.engagement_frame += TIME_SPEED_MAP[get_speed_rate()]
+        symbolic_situation = execute.get_last_symbolic_situation()
+        if symbolic_situation is not None:
+            self.engagement_state.update_from_situation(
+                symbolic_situation,
+                current_frame=self.engagement_frame,
+            )
+        pending_attack_requests = {}
+        planned_attackers = defaultdict(set)
+        planned_interceptors = defaultdict(int)
+        enemy_id_set = set(map(str, enemy_ids))
+        enemy_raw_by_id = {
+            str(raw_data.get('mdlID')): raw_data
+            for raw_data in self.raw_data
+            if str(raw_data.get('mdlID')) in enemy_id_set
+        }
         for atk_entity_id, acts in actions_dict.items():
-            # index 4 约定为 AttackTargetActor，概率在 pos0，目标索引在 pos1
-            atk_prob, target_id = acts[4][0], str(acts[4][1])
+            # index 4：概率、目标ID、保留、保留、发射数量。
+            atk_prob, target_id = float(acts[4][0]), str(acts[4][1])
             if atk_prob < ACTOR_PROBABILITY and atk_prob != 0.0123:
                 continue
-            if target_id not in enemy_ids:
+            if target_id not in enemy_id_set:
                 continue
-            if not self.attack_throttle.can_attack(atk_entity_id, target_id): # 超额不能攻击了
-                acts[4][0] = 0.01                             # 直接禁掉攻击
-                if atk_prob == 0.0123:                        # 追击还要关机动
-                    acts[2][0] = 0.01
+            target_raw = enemy_raw_by_id.get(target_id, {})
+            contact_type = int(target_raw.get('contactType', -1))
+            altitude = float(target_raw.get('entitySpatialCoord', {}).get('altitude', 0) or 0)
+            is_missile = (
+                'WEAPON' in str(target_raw.get('mdlType', '')).upper()
+                and contact_type not in (3, 9, 16)
+                and altitude >= 0
+            )
+            requested_quantity = acts[4][4]
+            if not isinstance(requested_quantity, int) or isinstance(requested_quantity, bool):
+                requested_quantity = DEFAULT_ATTACK_QUANTITY
+            canonical_target_id = self.engagement_state.canonical_target_id(target_id)
+            (
+                _,
+                slot_available,
+                already_attacking,
+                interceptors_launched,
+            ) = self.engagement_state.target_attack_status(
+                atk_entity_id,
+                target_id,
+                planned_attackers=planned_attackers[canonical_target_id],
+            )
+            accepted_quantity = max(1, int(requested_quantity))
+            denial_reason = None
+            if already_attacking:
+                denial_reason = '该平台仍有对应在途武器'
+            elif not slot_available:
+                denial_reason = '同一目标并发攻击平台已达上限'
+            elif is_missile:
+                remaining = (
+                    MAX_INTERCEPTORS_PER_MISSILE
+                    - interceptors_launched
+                    - planned_interceptors[canonical_target_id]
+                )
+                if remaining <= 0:
+                    denial_reason = '该来袭导弹的累计拦截弹已达上限'
+                else:
+                    accepted_quantity = min(accepted_quantity, remaining)
+            if denial_reason is not None:
+                acts[4][0] = 0.01
+                logger.debug(
+                    '[MADDPG规则] entity=%s target=%s rule=R-CON-001 拒绝：%s',
+                    atk_entity_id,
+                    target_id,
+                    denial_reason,
+                )
                 continue
-            self.attack_throttle.register(atk_entity_id, target_id)
+            acts[4][4] = accepted_quantity
+            planned_attackers[canonical_target_id].add(str(atk_entity_id))
+            if is_missile:
+                planned_interceptors[canonical_target_id] += accepted_quantity
+            pending_attack_requests[atk_entity_id] = {
+                'target_id': target_id,
+                'target_is_missile': is_missile,
+                'quantity': accepted_quantity,
+                'target_aliases': (
+                    target_raw.get('entityGuid'),
+                    target_raw.get('contactGuid'),
+                    target_raw.get('mdlID'),
+                ),
+            }
             
         # for atk_entity_id, acts in actions_dict.items():
         #     # index 4 约定为 AttackTargetActor，概率在 pos0，目标索引在 pos1
@@ -996,6 +1049,19 @@ class SimulatedEnv:
         #             self.attack_throttle.register(atk_entity_id, target_id)
                 
         execute_results, rewards = execute.execute_actions(actions_dict, enemy_ids, probablity = ACTOR_PROBABILITY, logger=logger)
+        for attacker_id, attack_request in pending_attack_requests.items():
+            performed = execute_results.get(attacker_id, [])
+            success = len(performed) > 4 and bool(performed[4])
+            if success:
+                self.engagement_state.record_successful_attack(
+                    attacker_id=attacker_id,
+                    target_id=attack_request['target_id'],
+                    started_frame=self.engagement_frame,
+                    target_is_missile=attack_request['target_is_missile'],
+                    target_aliases=attack_request['target_aliases'],
+                    interceptor_count=attack_request['quantity'],
+                    attack_quantity=attack_request['quantity'],
+                )
         # 记录实体执行的动作
         logger.info(" ")
         logger.info(self.current_step)
@@ -1105,6 +1171,15 @@ class SimulatedEnv:
     def read_next_state(self, logger):
         """从 JSON 文件中读取下一个状态"""
         return execute.get_Situaction4test(logger)
+
+    def refresh_live_state(self, logger):
+        """只刷新实时态势，不执行任何智能体动作。"""
+        self.raw_data = self.read_next_state(logger)
+        self.current_state, self.current_mask = self.entity_encoder.encode(self.raw_data)
+        return {
+            'encoded_data': torch.FloatTensor(self.current_state),
+            'mask': torch.BoolTensor(self.current_mask),
+        }
         
     
 class SignalListener:
@@ -1113,7 +1188,14 @@ class SignalListener:
         self.logger = logger
         self.state = "idle"
         self.control_event = threading.Event()
+        self.shutdown_event = threading.Event()
         self.simulating = False
+
+    def shutdown(self):
+        """停止控制线程并唤醒所有等待中的主循环。"""
+        self.shutdown_event.set()
+        self.simulating = False
+        self.control_event.set()
 
     def handle_signal(self, sig):
         if sig == "start":
@@ -1123,7 +1205,7 @@ class SignalListener:
                 self.control_event.set()
             elif self.state == "paused":
                 self.env.resume()
-                # self.simulating = True
+                self.simulating = True
                 self.control_event.set()
             self.state = "running"
 
@@ -1134,8 +1216,8 @@ class SignalListener:
 
         elif sig == "stop":
             self.env.stop()
-            self.control_event.clear()
             self.simulating = False
+            self.control_event.set()
             self.state = "stopped"
 
         elif sig == "restart":
@@ -1145,7 +1227,11 @@ class SignalListener:
             self.control_event.set()
             self.state = "running"
 
-        elif sig == "running": # 不做处理
+        elif sig == "running":
+            if self.state == "paused":
+                self.env.resume()
+            self.simulating = True
+            self.control_event.set()
             self.state = "running"
 
         # self.logger.info(f"[SIGNAL] Received signal: {sig} → new state: {self.state}")
@@ -1156,8 +1242,7 @@ class SignalListener:
         #     time.sleep(5)
         #     self.handle_signal(sig)
 
-        while True:
-            time.sleep(1.0) # 这样可以限制一秒决策一次
+        while not self.shutdown_event.wait(1.0):
             try:
                 speed = execute.get_speed()
                 execute.set_speed_rate(speed)
@@ -1166,7 +1251,8 @@ class SignalListener:
                 print(f'speed: {speed}, signal: {signal}')
             except Exception as e:
                 print(e)
-                time.sleep(1)
+                if self.shutdown_event.wait(1.0):
+                    break
         
 
 
@@ -1283,10 +1369,19 @@ def main_loop(env, controller, logger, maddpg, device):
     # env.attck_center_point = get_area_center(env.attck_point_list)
 
     step_count = 0
-    while controller.simulating:
-        controller.control_event.wait()  # 阻塞直到 start/resume
-        if not controller.simulating:
+    while controller.simulating and not controller.shutdown_event.is_set():
+        if not controller.control_event.wait(timeout=0.2):
+            continue
+        if not controller.simulating or controller.shutdown_event.is_set():
             break
+
+        # 上一帧态势超时时只轮询恢复，不基于旧态势重复下发动作。
+        if execute.is_live_situation_stale():
+            logger.warning('[MAIN] 实时态势仍为缓存帧，本轮不下发动作')
+            if controller.shutdown_event.wait(1.0):
+                break
+            state = env.refresh_live_state(logger)
+            continue
 
         # ------------重置动作---------------
         all_actions = [[] for _ in range(len(maddpg.agents))]
@@ -1380,17 +1475,26 @@ def main():
     maddpg.device = device
     maddpg.to(device) 
 
-    threading.Thread(target=controller.simulate_signals, daemon=True).start()
+    threading.Thread(
+        target=controller.simulate_signals,
+        name="maddpg-signal-listener",
+        daemon=True,
+    ).start()
 
-    while True:
-        # 等待 signal 设置 controller.simulating=True
-        while not controller.simulating:
-            time.sleep(0.2)
+    try:
+        while not controller.shutdown_event.is_set():
+            if not controller.simulating:
+                controller.shutdown_event.wait(0.2)
+                continue
 
-        # 开始执行主循环（可中途被 stop/restart）
-        main_loop(env, controller, logger, maddpg, device)
+            main_loop(env, controller, logger, maddpg, device)
 
-        logger.info("[MAIN] Simulation ended. Waiting for new signal...")
+            if not controller.shutdown_event.is_set():
+                logger.info("[MAIN] Simulation ended. Waiting for new signal...")
+    except KeyboardInterrupt:
+        logger.info("[MAIN] Ctrl+C received. Shutting down...")
+    finally:
+        controller.shutdown()
  
     
 def load_seed(seed):
