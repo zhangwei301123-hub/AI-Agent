@@ -1,7 +1,7 @@
-from entity import *
+from .entity import *
 import copy
-from actor import AircraftTakeOffActor, ReturnToBaseActor
-from actor import ActionEncoder,actor_output_to_action
+from .actor import AircraftTakeOffActor, ReturnToBaseActor
+from .actor import ActionEncoder, actor_output_to_action
 # 合并全局状态和所有智能体动作特征
 class Critic(nn.Module):
     """集中式Critic网络, 评估联合动作价值"""

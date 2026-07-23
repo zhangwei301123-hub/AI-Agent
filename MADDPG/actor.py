@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from numpy.ma.core import max_filler
 
-from entity import  AIR_STATUS_MAP, MAX_ACTION_ENTITIES, MAX_TARGETS
+from .entity import AIR_STATUS_MAP, MAX_ACTION_ENTITIES, MAX_TARGETS
 # 所有actor指令输出横向拼接 最大维度为5
 
 
@@ -501,7 +501,7 @@ class DeploySonobuoyActor(nn.Module):
             "deploy_prob": deploy_prob       # 执行部署的概率
         } # 3
 
-from entity import AIR_STATUS_MAP
+from .entity import AIR_STATUS_MAP
 
 
 class CancelAttackActor(nn.Module):

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import grpc
 
-import execute
+from MADDPG import execute
 
 
 class _TransientRpcError(grpc.RpcError):

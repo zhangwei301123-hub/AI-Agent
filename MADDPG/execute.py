@@ -10,8 +10,8 @@ from symbolic_reasoning.execute_actions import execute_actions as _execute_symbo
 from symbolic_reasoning.entity import EntityEncoder as SymbolicEntityEncoder
 from symbolic_reasoning.live import RpcSituationSource
 
-from changeRespondToJson import *
-from maddpg_live_adapter import (
+from .changeRespondToJson import *
+from .maddpg_live_adapter import (
     legacy_entities_from_symbolic_payload,
     set_report_time_origin,
 )

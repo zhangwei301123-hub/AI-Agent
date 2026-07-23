@@ -15,29 +15,30 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from numpy.ma.core import true_divide
 
-from entity import *
-from actor import *
-from critic import Critic, TransformerBlock
+from .entity import *
+from .actor import *
+from .critic import Critic, TransformerBlock
 
-from execute import reset, get_DetectionReports, get_AttackReports, get_Situaction, get_UseUpReports, pause, start, getEndSignal
+from . import execute
+from .execute import reset, get_DetectionReports, get_AttackReports, get_Situaction, get_UseUpReports, pause, start, getEndSignal
 
-from reward import CombatRewardCalculator
+from .reward import CombatRewardCalculator
 import os
 import random
 
-from log import Log
+from .log import Log
 
 
-from utils import bootstrap_recon, evade_missiles, geo_distance, log_entity_actions
-from latch_manager import CommandLatch0,DEFAULT_COOLDOWN,long_WayPointMove
-from engagement_rules import ENGAGEMENT_RULES,MAX_RANGE,DIRECTION_OFFSET
+from .utils import bootstrap_recon, evade_missiles, geo_distance, log_entity_actions
+from .latch_manager import CommandLatch0,DEFAULT_COOLDOWN,long_WayPointMove
+from .engagement_rules import ENGAGEMENT_RULES,MAX_RANGE,DIRECTION_OFFSET
 
-from execute import TIME_SPEED_MAP, SPEED_RATE, get_speed_rate
+from .execute import TIME_SPEED_MAP, SPEED_RATE, get_speed_rate
 
-from actor_rules import *
+from .actor_rules import *
 
 from collections import defaultdict
-from maddpg_rule_guard import (
+from .maddpg_rule_guard import (
     DEFAULT_ATTACK_QUANTITY,
     MISSILE_EVADE_DISTANCE_M,
 )
@@ -1460,7 +1461,6 @@ def load_checkpoint2(maddpg, filename, logger):
     return others_checkpoint.get("episode", 0), others_checkpoint.get("iter", 0)
 
 # 新增 首次被发现step， 最近被发现step 的 敌方实体字典
-import execute
 def main():
     env = SimulatedEnv()
 

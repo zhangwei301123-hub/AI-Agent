@@ -6,7 +6,7 @@
 import threading
 import time
 from collections import defaultdict
-from execute import *
+from .execute import *
 
 DEFAULT_COOLDOWN = {
     0: 1200,   # AircraftTakeOffActor     （起飞全流程）

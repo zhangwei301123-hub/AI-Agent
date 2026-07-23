@@ -1,6 +1,10 @@
 import unittest
 
-from maddpg4test import ATTACK_SLOT_TIMEOUT_FRAMES, SignalListener, SimulatedEnv
+from MADDPG.maddpg4test import (
+    ATTACK_SLOT_TIMEOUT_FRAMES,
+    SignalListener,
+    SimulatedEnv,
+)
 from symbolic_reasoning.entity import EntityEncoder as SymbolicEntityEncoder
 
 

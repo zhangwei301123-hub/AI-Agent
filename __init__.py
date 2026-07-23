@@ -1,1 +1,1 @@
-from entity import *
+from MADDPG.entity import *

@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-import maddpg_ as maddpg_training
-import maddpg_live_adapter
+from MADDPG import maddpg_ as maddpg_training
+from MADDPG import maddpg_live_adapter
 from symbolic_reasoning.state import EngagementState
 
 

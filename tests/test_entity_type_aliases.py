@@ -1,7 +1,7 @@
 import unittest
 
-from entity import EntityEncoder, normalize_entity_type
-from maddpg_live_adapter import legacy_entities_from_symbolic_payload
+from MADDPG.entity import EntityEncoder, normalize_entity_type
+from MADDPG.maddpg_live_adapter import legacy_entities_from_symbolic_payload
 
 
 class EntityTypeAliasTest(unittest.TestCase):

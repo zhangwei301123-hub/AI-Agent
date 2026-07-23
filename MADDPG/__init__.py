@@ -1,1 +1,1 @@
-from entity import *
+"""MADDPG training and evaluation package."""

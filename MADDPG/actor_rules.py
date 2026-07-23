@@ -1,8 +1,8 @@
-from engagement_rules import *
-from utils import *
+from .engagement_rules import *
+from .utils import *
 import math
-from execute  import *
-from maddpg_rule_guard import (
+from .execute import *
+from .maddpg_rule_guard import (
     AttackTargetInput,
     DEFAULT_ATTACK_QUANTITY,
     decide_attack,

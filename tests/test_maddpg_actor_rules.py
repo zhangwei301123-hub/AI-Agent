@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-from actor_rules import handle_attack_decision, handle_deploy
+from MADDPG.actor_rules import handle_attack_decision, handle_deploy
 
 
 class _Logger:

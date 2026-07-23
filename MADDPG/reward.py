@@ -5,9 +5,9 @@ import torch
 from numpy.core.defchararray import upper
 from torch.utils.hipify.hipify_python import value
 
-from entity import *
+from .entity import *
 import os
-import execute
+from . import execute
 
 
 # attack type  潜艇  船 武器  飞机 un-hit

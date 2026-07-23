@@ -1,2 +1,2 @@
 conda activate py37
-python maddpg4test.py
+python -m MADDPG.maddpg4test

@@ -1,5 +1,5 @@
 import torch
-from maddpg_ import MADDPG, ACTOR_TYPES   # 根据你的包结构调整 import
+from .maddpg_ import MADDPG, ACTOR_TYPES
 
 def main():
     # ——> 构造模型所需的超参数保持跟训练脚本一致

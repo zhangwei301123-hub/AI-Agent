@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from maddpg_rule_guard import (
+from MADDPG.maddpg_rule_guard import (
     ASW_TORPEDO_RELEASE_DISTANCE_M,
     AttackTargetInput,
     AttackThrottle,

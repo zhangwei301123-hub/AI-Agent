@@ -5,9 +5,9 @@ import time
 import datetime
 
 # 导入根据 proto 编译出来的模块
-import SimulationControlInstruction_pb2 as pb2
-import SimulationControlInstruction_pb2_grpc as pb2_grpc
-from SimulationControlInstruction_pb2 import AreaPointList, AreaPoint
+from . import SimulationControlInstruction_pb2 as pb2
+from . import SimulationControlInstruction_pb2_grpc as pb2_grpc
+from .SimulationControlInstruction_pb2 import AreaPointList, AreaPoint
 
 # 模拟服务实现类
 class SimulationServiceServicer(pb2_grpc.SimulationServiceServicer):

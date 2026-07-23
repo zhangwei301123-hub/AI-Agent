@@ -4,7 +4,7 @@ import pdb
 import math
 import random
 import numpy as np
-from entity import AIR_STATUS_MAP
+from .entity import AIR_STATUS_MAP
 from shapely.ops import nearest_points
 from shapely.geometry import Polygon, Point, LineString
 import math
@@ -12,8 +12,8 @@ import hashlib
 
 from typing import Optional, Tuple
 
-from entity import get_env_entity_ids, get_coordinate_from_encoded_data
-from maddpg_rule_guard import missile_points_at_entity
+from .entity import get_env_entity_ids, get_coordinate_from_encoded_data
+from .maddpg_rule_guard import missile_points_at_entity
 
 # 根据你的 encoded_data 列含义自行调整
 COL_TYPE = 13  # 0=Aircraft 1=Ship 2=Sub …

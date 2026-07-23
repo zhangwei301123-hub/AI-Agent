@@ -6,7 +6,7 @@ import numpy as np
 import json
 from typing import List, Dict
 
-from execute import *
+from .execute import *
 
 # 打算按照reportTime.json 保存json文件
 AIR_STATUS_MAP = {
