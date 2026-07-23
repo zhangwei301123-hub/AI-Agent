@@ -1152,8 +1152,11 @@ def main_loop(
             # 服务恢复并再次返回 running 后从同一逻辑帧继续。
             error_key = "{}:{}".format(type(error).__name__, error)
             if error_key != last_situation_error:
+                # logger.warning(
+                #     "[实时态势] 读取失败，等待服务恢复: %s", error
+                # )
                 logger.warning(
-                    "[实时态势] 读取失败，等待服务恢复: %s", error
+                    "[实时态势] 读取失败，等待服务恢复", 
                 )
                 last_situation_error = error_key
             else:

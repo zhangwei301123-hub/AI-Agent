@@ -348,8 +348,22 @@ class CombatRewardCalculator:
         # print('--------------update_loss_buffer_reward')
         logger.info('--------------update_loss_buffer_reward')
         try:
+            latest_episode = maddpg.buffer.get_latest_episode()
+            controlled_entity_ids = {
+                str(entity_id)
+                for experience in latest_episode
+                for entity_id in experience['action_entity_id']
+            }
             flags = [False] * len(loss_entity_id)
-            for store_experience in reversed(maddpg.buffer.get_latest_episode()):  # 倒着取每一帧
+            ignored_ids = []
+            for i, entity_id in enumerate(loss_entity_id):
+                if str(entity_id) not in controlled_entity_ids:
+                    flags[i] = True
+                    ignored_ids.append(entity_id)
+            if ignored_ids:
+                logger.info("忽略非红方可控实体的损失报告: %s", ignored_ids)
+
+            for store_experience in reversed(latest_episode):  # 倒着取每一帧
                 if all(flags):
                     break
 
@@ -370,7 +384,6 @@ class CombatRewardCalculator:
                     num_actors = actions.shape[0]
                     # 这是为了防止  ValueError('could not broadcast input array from shape (3,) into shape (8,)')
                     if not action_entity_id:
-                        logger.warning(f"loss_entity {loss_entity} not found in action_entity_ids: {action_entity_ids}")
                         continue
                     entity_idx = action_entity_id[0]  # 只取第一个匹配的 index
                     action_entity_id_idx = np.full(num_actors, entity_idx)
@@ -691,4 +704,4 @@ class CombatRewardCalculator:
     
 
 # if __name__ == "__main__":
-#     test3() 
+#     test3()

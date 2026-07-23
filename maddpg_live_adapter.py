@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from symbolic_reasoning.entity import EntityEncoder as SymbolicEntityEncoder
@@ -9,6 +11,7 @@ from symbolic_reasoning.entity import TargetDomain
 
 
 KM_PER_NAUTICAL_MILE = 1.852
+_REPORT_TIME_ORIGIN: Optional[datetime] = None
 
 
 def _unit_list(payload: Mapping[str, Any]) -> List[Mapping[str, Any]]:
@@ -39,12 +42,41 @@ def _range_nm(range_km: float) -> float:
     return max(0.0, float(range_km)) / KM_PER_NAUTICAL_MILE
 
 
+def _parse_scenario_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    parts = re.findall(r"\d+(?:\.\d+)?", value)
+    if len(parts) < 6:
+        return None
+    try:
+        seconds = float(parts[5])
+        return datetime(
+            int(parts[0]),
+            int(parts[1]),
+            int(parts[2]),
+            int(parts[3]),
+            int(parts[4]),
+            int(seconds),
+            min(999_999, int(round((seconds % 1) * 1_000_000))),
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def set_report_time_origin(value: Any) -> None:
+    """Set the scenario start used to convert ISO timestamps to elapsed seconds."""
+    global _REPORT_TIME_ORIGIN
+    _REPORT_TIME_ORIGIN = _parse_scenario_datetime(value)
+
+
 def _numeric_report_time(value: Any) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
-        # 新接口可能返回 ISO-8601；旧 38 维编码只接受数值且该列不参与控制。
-        return 0.0
+        current = _parse_scenario_datetime(value)
+        if current is None or _REPORT_TIME_ORIGIN is None:
+            return 0.0
+        return max(0.0, (current - _REPORT_TIME_ORIGIN).total_seconds())
 
 
 def legacy_entities_from_symbolic_payload(

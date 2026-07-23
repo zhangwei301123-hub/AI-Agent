@@ -2,7 +2,9 @@
 import copy
 import pdb
 import pickle
+import sys
 import time
+from threading import Thread
 from http.client import responses
 import math
 from operator import index
@@ -12,7 +14,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from numpy.ma.core import true_divide
-from typing import Dict
 
 from entity import *
 from actor import *
@@ -31,11 +32,19 @@ from utils import bootstrap_recon, evade_missiles, geo_distance, log_entity_acti
 from latch_manager import CommandLatch0,DEFAULT_COOLDOWN,long_WayPointMove
 from engagement_rules import ENGAGEMENT_RULES,MAX_RANGE,DIRECTION_OFFSET
 
-from  execute import TIME_SPEED_MAP, SPEED_RATE
+from execute import TIME_SPEED_MAP, SPEED_RATE, get_speed_rate
 
 from actor_rules import *
 
 from collections import defaultdict
+from maddpg_rule_guard import (
+    DEFAULT_ATTACK_QUANTITY,
+    MISSILE_EVADE_DISTANCE_M,
+)
+from symbolic_reasoning.state import (
+    EngagementState,
+    MAX_INTERCEPTORS_PER_MISSILE,
+)
 
 
 
@@ -43,6 +52,7 @@ from collections import defaultdict
 # 改成常量，方便以后调
 ATTACK_CD_SEC   = 1800          # 每对 attacker→target 的 CD
 MAX_PAR_ATTACK  = 3            # 同一 target 允许并发的攻击者数
+ATTACK_SLOT_TIMEOUT_FRAMES = 100
 MAX_CRITIC_NORM = 0.2
 MAX_ACTOR_NORM = 0.1
 
@@ -99,13 +109,14 @@ ATTACK_CAPABLE_AIRCRAFT_TYPES = {0, 1, 2, 4, 6, 7, 13}
 
 SUB2SUB_MAX_RANGE_NM = 14   # 潜艇对潜艇最大允许射程 (海里)
 
-OUR_SIDE = 0
-ENEMY_SIDE = 1
+# 训练只控制红方：编码中红方=1、蓝方=0。
+OUR_SIDE = 1
+ENEMY_SIDE = 0
 
 BUFFER_CAP = 50000
 
 
-MISSILE_THREAT_DIST = 300000
+MISSILE_THREAT_DIST = MISSILE_EVADE_DISTANCE_M
 
 # logger = None
 
@@ -325,7 +336,13 @@ class MADDPG(nn.Module):
 
         for i in range(encoded_data.shape[0]):
             # 获取当前帧中需要关注的实体索引
-            filtered_index = get_env_entity_ids(encoded_data[i].cpu().numpy(), mask[i].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2]) # 按需求添加 modify
+            filtered_index = get_env_entity_ids(
+                encoded_data[i].cpu().numpy(),
+                mask[i].cpu().numpy(),
+                target_side=OUR_SIDE,
+                allowed_types=[0, 1, 2],
+                require_manageable=True,
+            )
             len_entities.append(len(filtered_index))
             single_frame_all_our_entities = []
         
@@ -343,7 +360,13 @@ class MADDPG(nn.Module):
             all_frame_all_our_entities.append(single_frame_all_our_entities)
 
             # 获取当前帧中所有目标实体的索引
-            enemies_index = get_env_entity_ids(encoded_data[i].cpu().numpy(), mask[i].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4]) # 按需求添加 modify
+            enemies_index = get_env_entity_ids(
+                encoded_data[i].cpu().numpy(),
+                mask[i].cpu().numpy(),
+                target_side=ENEMY_SIDE,
+                allowed_types=[0, 1, 2, 4],
+                require_manageable=False,
+            )
             single_frame_all_enemies = []
             for index in enemies_index:
                 single_frame_all_enemies.append(self.self_encoder(attn_output[i][index]))
@@ -357,11 +380,13 @@ class MADDPG(nn.Module):
             our_coords = get_coordinate_from_encoded_data(encoded_data[i].cpu().numpy(),
                                                      mask[i].cpu().numpy(),
                                                      target_side=OUR_SIDE,
-                                                     allowed_types=[0, 1, 2])
+                                                     allowed_types=[0, 1, 2],
+                                                     require_manageable=True)
             enemy_coords = get_coordinate_from_encoded_data(encoded_data[i].cpu().numpy(),
                                                        mask[i].cpu().numpy(),
                                                        target_side=ENEMY_SIDE,
-                                                       allowed_types=[0, 1, 2, 4])
+                                                       allowed_types=[0, 1, 2, 4],
+                                                       require_manageable=False)
             enemy_speed = get_velocity_from_encoded_data(encoded_data[i].cpu().numpy(),
                                            mask[i].cpu().numpy(),
                                            target_side=ENEMY_SIDE,
@@ -765,6 +790,15 @@ class ReplayBuffer:
         if len(flat_buffer) < batch_size:
             raise ValueError(f"样本不足，总可采样数为 {len(flat_buffer)}")
 
+        valid_buffer = [exp for exp in flat_buffer if self._has_valid_mask(exp)]
+        if len(valid_buffer) < batch_size:
+            raise ValueError(
+                "有效 mask 样本不足："
+                f"需要 {batch_size}，当前仅 {len(valid_buffer)}"
+            )
+        # 后续的新旧样本分层只在有效经验中进行，避免无界随机重试。
+        flat_buffer = valid_buffer
+
         # 划分新旧数据
         recent_start = int(len(flat_buffer) * (1 - recent_ratio))
         recent_buffer = flat_buffer[recent_start:]  # 新数据（后 recent_ratio%）
@@ -862,7 +896,10 @@ class SimulatedEnv:
         self.attck_center_point = None
         self.attck_point_list = []
         self.pending_wp = {}
-        self.attack_throttle = AttackThrottle(cd_sec=ATTACK_CD_SEC, max_parallel=MAX_PAR_ATTACK)
+        self.engagement_state = EngagementState(
+            timeout_frames=ATTACK_SLOT_TIMEOUT_FRAMES,
+        )
+        self.engagement_frame = 0
 
 
     def reset_entity_action_frame_link(self):
@@ -883,6 +920,8 @@ class SimulatedEnv:
         self.latch = CommandLatch0()          # 每局重置
         self._prev_threatened.clear()
         self.pending_wp = {}
+        self.engagement_state.reset()
+        self.engagement_frame = 0
 
         self.aircraft_unitcategory_num = defaultdict(int)
 
@@ -916,18 +955,48 @@ class SimulatedEnv:
         number_urgent = len(urgent_flags)
 
         #我方全部可以执行动作的实体的索引 同时对应raw_data中该实体的索引
-        our_entity_indices = get_env_entity_ids(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2])
-        our_can_attack_ids = is_can_attack(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2])
+        our_entity_indices = get_env_entity_ids(
+            now_state['encoded_data'].cpu().numpy(),
+            now_state['mask'].cpu().numpy(),
+            target_side=OUR_SIDE,
+            allowed_types=[0, 1, 2],
+            require_manageable=True,
+        )
+        our_can_attack_ids = is_can_attack(
+            now_state['encoded_data'].cpu().numpy(),
+            now_state['mask'].cpu().numpy(),
+            target_side=OUR_SIDE,
+            allowed_types=[0, 1, 2],
+            require_manageable=True,
+        )
         #我方全部实体的ID
         our_entity_ids = [ entity.get('mdlID') for i ,entity in enumerate(self.raw_data) if i in our_entity_indices]
         #我方实体的坐标
-        our_entity_coordinate = get_coordinate_from_encoded_data(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0, 1, 2])
+        our_entity_coordinate = get_coordinate_from_encoded_data(
+            now_state['encoded_data'].cpu().numpy(),
+            now_state['mask'].cpu().numpy(),
+            target_side=OUR_SIDE,
+            allowed_types=[0, 1, 2],
+            require_manageable=True,
+        )
 
         #敌方全部实体的索引
-        enemy_indices = get_env_entity_ids(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4])
+        enemy_indices = get_env_entity_ids(
+            now_state['encoded_data'].cpu().numpy(),
+            now_state['mask'].cpu().numpy(),
+            target_side=ENEMY_SIDE,
+            allowed_types=[0, 1, 2, 4],
+            require_manageable=False,
+        )
         #敌方全部实体的ID
         enemy_ids = [ entity.get('mdlID') for i ,entity in enumerate(self.raw_data) if i in enemy_indices]
-        enemy_coordinate = get_coordinate_from_encoded_data(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=ENEMY_SIDE, allowed_types=[0, 1, 2, 4])
+        enemy_coordinate = get_coordinate_from_encoded_data(
+            now_state['encoded_data'].cpu().numpy(),
+            now_state['mask'].cpu().numpy(),
+            target_side=ENEMY_SIDE,
+            allowed_types=[0, 1, 2, 4],
+            require_manageable=False,
+        )
         actions_dict = {}
         # # 获取我方实体具体类型id
         # our_unitCategory = get_unitCategory(now_state['encoded_data'].cpu().numpy(), now_state['mask'].cpu().numpy(), target_side=OUR_SIDE, allowed_types=[0])
@@ -1014,21 +1083,104 @@ class SimulatedEnv:
                     actions_dict[ent_id][actor_idx][0] = 0.01
 
 
-        self.attack_throttle.tick()              # 1) 先全体 -1
+        # 用红方态势中的“发射平台 -> 在途武器 -> 目标”链路维护攻击槽位。
+        self.engagement_frame += TIME_SPEED_MAP[get_speed_rate()]
+        symbolic_situation = execute.get_last_symbolic_situation()
+        if symbolic_situation is not None:
+            self.engagement_state.update_from_situation(
+                symbolic_situation,
+                current_frame=self.engagement_frame,
+            )
+        pending_attack_requests = {}
+        planned_attackers = defaultdict(set)
+        planned_interceptors = defaultdict(int)
+        enemy_id_set = set(map(str, enemy_ids))
+        enemy_raw_by_id = {
+            str(raw_data.get('mdlID')): raw_data
+            for raw_data in self.raw_data
+            if str(raw_data.get('mdlID')) in enemy_id_set
+        }
 
         for atk_entity_id, acts in actions_dict.items():
             # index 4 约定为 AttackTargetActor，概率在 pos0，目标索引在 pos1
-            atk_prob, target_id = acts[4][0], str(acts[4][1])
+            atk_prob, target_id = float(acts[4][0]), str(acts[4][1])
             if atk_prob < ACTOR_PROBABILITY and atk_prob != 0.0123:
                 continue
-            if target_id not in enemy_ids:
+            if target_id not in enemy_id_set:
                 continue
-            if not self.attack_throttle.can_attack(atk_entity_id, target_id): # 超额不能攻击了
-                acts[4][0] = 0.01                             # 直接禁掉攻击
-                if atk_prob == 0.0123:                        # 追击还要关机动
+
+            target_raw = enemy_raw_by_id.get(target_id, {})
+            contact_type = int(target_raw.get('contactType', -1))
+            altitude = float(
+                target_raw.get('entitySpatialCoord', {}).get('altitude', 0) or 0
+            )
+            is_missile = (
+                'WEAPON' in str(target_raw.get('mdlType', '')).upper()
+                and contact_type not in (3, 9, 16)
+                and altitude >= 0
+            )
+            requested_quantity = acts[4][4]
+            if not isinstance(requested_quantity, int) or isinstance(
+                requested_quantity, bool
+            ):
+                requested_quantity = DEFAULT_ATTACK_QUANTITY
+
+            canonical_target_id = self.engagement_state.canonical_target_id(
+                target_id
+            )
+            (
+                _,
+                slot_available,
+                already_attacking,
+                interceptors_launched,
+            ) = self.engagement_state.target_attack_status(
+                atk_entity_id,
+                target_id,
+                planned_attackers=planned_attackers[canonical_target_id],
+            )
+            accepted_quantity = max(1, int(requested_quantity))
+            denial_reason = None
+            if already_attacking:
+                denial_reason = '该红方平台仍有对应在途武器'
+            elif not slot_available:
+                denial_reason = '同一目标并发攻击平台已达上限'
+            elif is_missile:
+                remaining = (
+                    MAX_INTERCEPTORS_PER_MISSILE
+                    - interceptors_launched
+                    - planned_interceptors[canonical_target_id]
+                )
+                if remaining <= 0:
+                    denial_reason = '该来袭导弹的累计拦截弹已达上限'
+                else:
+                    accepted_quantity = min(accepted_quantity, remaining)
+
+            if denial_reason is not None:
+                acts[4][0] = 0.01
+                if atk_prob == 0.0123:
                     acts[2][0] = 0.01
+                logger.debug(
+                    '[MADDPG规则] entity=%s target=%s rule=R-CON-001 拒绝：%s',
+                    atk_entity_id,
+                    target_id,
+                    denial_reason,
+                )
                 continue
-            self.attack_throttle.register(atk_entity_id, target_id)
+
+            acts[4][4] = accepted_quantity
+            planned_attackers[canonical_target_id].add(str(atk_entity_id))
+            if is_missile:
+                planned_interceptors[canonical_target_id] += accepted_quantity
+            pending_attack_requests[atk_entity_id] = {
+                'target_id': target_id,
+                'target_is_missile': is_missile,
+                'quantity': accepted_quantity,
+                'target_aliases': (
+                    target_raw.get('entityGuid'),
+                    target_raw.get('contactGuid'),
+                    target_raw.get('mdlID'),
+                ),
+            }
 
         # for atk_entity_id, acts in actions_dict.items():
         #     # index 4 约定为 AttackTargetActor，概率在 pos0，目标索引在 pos1
@@ -1043,6 +1195,20 @@ class SimulatedEnv:
 
 
         execute_results, rewards = execute.execute_actions(actions_dict, enemy_ids, probablity = ACTOR_PROBABILITY, logger=logger)
+        # 只有符号执行接口确认发射成功后才占用槽位。
+        for attacker_id, attack_request in pending_attack_requests.items():
+            performed = execute_results.get(attacker_id, [])
+            success = len(performed) > 4 and bool(performed[4])
+            if success:
+                self.engagement_state.record_successful_attack(
+                    attacker_id=attacker_id,
+                    target_id=attack_request['target_id'],
+                    started_frame=self.engagement_frame,
+                    target_is_missile=attack_request['target_is_missile'],
+                    target_aliases=attack_request['target_aliases'],
+                    interceptor_count=attack_request['quantity'],
+                    attack_quantity=attack_request['quantity'],
+                )
         # 记录实体执行的动作
         logger.info(" ")
         log_entity_actions(execute_results, ACTOR_TYPES, logger)
@@ -1346,8 +1512,6 @@ def main():
 
         # ----------- 重置环境 ------------
         maddpg.buffer.start_new_episode()
-        for ag in maddpg.agents:
-            ag.decay_epsilon()
         env.reset_entity_action_frame_link()
         state = env.reset(logger)
         maddpg.sever_our = {}
@@ -1431,7 +1595,9 @@ def main():
                     agent_epsilon = agent.epsilon if hasattr(agent, "epsilon") else 0.1
                     action_tensor = apply_exploration(action_tensor.squeeze(0), epsilon=agent_epsilon, actor_index=i)
 
-                    all_actions[i] = (action_tensor.squeeze(0)) # action_tensor.squeeze(0) -> [max_entity_len, 5]
+                    # apply_exploration 后已经是 [max_entity_len, 5]；再次 squeeze(0)
+                    # 会在仅有一个可控红方实体时错误压成 [5]。
+                    all_actions[i] = action_tensor
                     # 这里或许可以对每个actor对于哪些实体不能做这个actor一个mask to do
                     # 即 原来的是 [1,1,1,1,1,0,0] 后面的0 仅仅是为了指出padding的非真实存在的实体
                     # 优化之后 是 [0,1,1,0,1,0,0] 中间的0 表示这个实体不能做这个actor
@@ -1609,6 +1775,40 @@ def load_seed(seed):
 
     return seed
 
+
+def _exit_after_keyboard_interrupt(pause_timeout=2.0):
+    """Best-effort pause, then bypass libraries that keep non-daemon threads alive."""
+    result = {"paused": False}
+
+    def pause_scenario():
+        try:
+            pause(None)
+            result["paused"] = True
+        except Exception:
+            pass
+
+    pause_thread = Thread(
+        target=pause_scenario,
+        name="maddpg-exit-pause",
+        daemon=True,
+    )
+    pause_thread.start()
+    pause_thread.join(timeout=max(0.0, float(pause_timeout)))
+
+    if result["paused"]:
+        message = "训练已由 Ctrl+C 安全停止，推演已暂停。"
+    else:
+        message = "训练已由 Ctrl+C 停止；暂停接口超时，本地进程已强制退出。"
+    print(f"\n{message}", flush=True)
+    try:
+        sys.stderr.flush()
+    finally:
+        # PyTorch/gRPC 可能残留非 daemon 工作线程，普通解释器退出会一直等待。
+        os._exit(130)
+
 if __name__ == "__main__":
     load_seed(42)
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        _exit_after_keyboard_interrupt()

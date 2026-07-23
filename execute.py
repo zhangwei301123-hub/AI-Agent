@@ -11,7 +11,10 @@ from symbolic_reasoning.entity import EntityEncoder as SymbolicEntityEncoder
 from symbolic_reasoning.live import RpcSituationSource
 
 from changeRespondToJson import *
-from maddpg_live_adapter import legacy_entities_from_symbolic_payload
+from maddpg_live_adapter import (
+    legacy_entities_from_symbolic_payload,
+    set_report_time_origin,
+)
 import random
 from threading import Lock
 
@@ -56,6 +59,7 @@ _LIVE_SITUATION_STALE = False
 
 LIVE_SITUATION_RETRY_ATTEMPTS = 2
 LIVE_SITUATION_RETRY_DELAY_SECONDS = 0.5
+CONTROL_RPC_TIMEOUT_SECONDS = 10.0
 _TRANSIENT_SITUATION_CODES = {
     grpc.StatusCode.DEADLINE_EXCEEDED,
     grpc.StatusCode.UNAVAILABLE,
@@ -107,7 +111,7 @@ def build_convex_hull(points):
 
 def get_attack_area():
     # response = stub.get_Attack_Area(Empty())
-    response = stub.getCombatArea(Empty())
+    response = stub.getCombatArea(Empty(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
     area_list = get_area(response)
     area_list = build_convex_hull(area_list)
     return area_list
@@ -147,7 +151,7 @@ def get_mission_dicts():
 # }
 #     return mission_dicts
    
-    mission_list = stub.getMissionList(Empty())
+    mission_list = stub.getMissionList(Empty(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
     mission_dict = {}
     
     dict_data = MessageToDict(
@@ -338,13 +342,37 @@ def reset(logger):
     # pdb.set_trace()
     # stub.endDedice(Empty())
     # stub.restoreScenario(Empty())
-    stub.loadScenario(ScenarioFileRequest(fileName=SCENARIO, scenarioXml=""))
-    stub.setTimeCompression(TimeCompressionRequest(timeCompression=SPEED_RATE))
-    stub.startDedicew(IdRequestw(mdlID=""))
+    # 新版 engine.proto 按当前已加载想定重新推演；兼容仍提供旧接口的服务端。
+    if hasattr(stub, "ReDeduction"):
+        stub.ReDeduction(EmptyRequest(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
+        engine_status = stub.GetEngineStatus(
+            EmptyRequest(),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+        set_report_time_origin(engine_status.start_time)
+        stub.SetTimeCompress(
+            SetTimeCompressRequest(time_compress=SPEED_RATE),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+        stub.StartScenario(EmptyRequest(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
+    else:
+        set_report_time_origin(None)
+        stub.loadScenario(
+            ScenarioFileRequest(fileName=SCENARIO, scenarioXml=""),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+        stub.setTimeCompression(
+            TimeCompressionRequest(timeCompression=SPEED_RATE),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+        stub.startDedicew(
+            IdRequestw(mdlID=""),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+    set_speed_rate(SPEED_RATE)
     time.sleep(1)
-    response = stub.getSituation(Empty())
-    # 返回的是所有的单装信息
-    response = get_situaction(response) #返回场景的 json化的 所有单装信息
+    # 训练只控制红方，必须读取红方视角的 Contact ID 和可控标记。
+    response = get_Situaction4test(logger)
     # print("================RESET================")
     logger.info("================RESET================")
     return response
@@ -355,8 +383,8 @@ def reset4test(logger):
     return response
 
 def get_Situaction(logger):
-    response=stub.getSituation(Empty())
-    response=get_situaction(response) #返回场景的 json化的 所有单装信息
+    # 训练与测试统一使用红方实时态势，避免旧 getSituation 的蓝方编码混入经验池。
+    response = get_Situaction4test(logger)
     if getEndSignal().code == 0:
         pause(logger)
     return response
@@ -423,34 +451,60 @@ def get_Situaction4test(logger):
     return response
 
 def start(logger):
-    stub.setTimeCompression(TimeCompressionRequest(timeCompression=SPEED_RATE))
-    response = stub.startDedicew(IdRequestw(mdlID=""))
+    if hasattr(stub, "StartScenario"):
+        stub.SetTimeCompress(
+            SetTimeCompressRequest(time_compress=SPEED_RATE),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+        response = stub.StartScenario(
+            EmptyRequest(),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+    else:
+        stub.setTimeCompression(
+            TimeCompressionRequest(timeCompression=SPEED_RATE),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+        response = stub.startDedicew(
+            IdRequestw(mdlID=""),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
     # print("================START===============")
     logger.info("================START===============")
     return response
 
 def pause(logger):
-    response = stub.pauseDedicew(Empty())
+    if hasattr(stub, "PauseScenario"):
+        response = stub.PauseScenario(
+            EmptyRequest(),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
+    else:
+        response = stub.pauseDedicew(
+            Empty(),
+            timeout=CONTROL_RPC_TIMEOUT_SECONDS,
+        )
     # print("================PAUSE===============")
-    logger.info("================PAUSE===============")
+    if logger is not None:
+        logger.info("================PAUSE===============")
     return response
 
-def getEndSignal():  
-    response = stub.getEndSignal(Empty())
+def getEndSignal():
+    response = stub.getEndSignal(Empty(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
     return response
 
 
 def get_UseUpReports():
-    response = stub.getUseUpReportw(Empty())
+    response = stub.getUseUpReportw(Empty(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
     response = useUpReportsToJson(response)
     return response
 def get_AttackReports():
-    response = stub.getAttackReport(Empty())
+    response = stub.getAttackReport(Empty(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
     response = attackReportsToJson(response) #返回场景的 json化的 所有单装信息
     return response
 
 def get_DetectionReports():
-    response = stub.getDetectionReport(Empty())
+    response = stub.getDetectionReport(Empty(), timeout=CONTROL_RPC_TIMEOUT_SECONDS)
     response = detectionReportsToJson(response) #返回场景的 json化的 所有单装信息
     return response
 
