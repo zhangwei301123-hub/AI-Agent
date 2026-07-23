@@ -21,6 +21,8 @@ ASW_TORPEDO_RELEASE_DISTANCE_NM = 0.4
 ASW_TORPEDO_RELEASE_DISTANCE_KM = (
     ASW_TORPEDO_RELEASE_DISTANCE_NM * 1.852
 )
+# 原主动浮标覆盖间距为 7.408 km；按需求改为沿航迹累计距离的 2 倍。
+SONOBUOY_TRACK_SPACING_KM = 14.816
 
 TAKEOFF_ACTOR = 0
 RETURN_TO_BASE_ACTOR = 1
@@ -283,6 +285,9 @@ class ReasoningFacts:
     mission_id: str = ""
     altitude_above_sea_m: float = -1.0
     sonobuoy_count: int = 0
+    sonobuoy_deployment_due: bool = True
+    sonobuoy_track_distance_km: float = 0.0
+    sonobuoy_track_spacing_km: float = SONOBUOY_TRACK_SPACING_KM
 
     def __post_init__(self) -> None:
         if not isinstance(self.entity_id, str) or not self.entity_id.strip():
@@ -336,6 +341,7 @@ class ReasoningFacts:
             "is_patrol_aircraft",
             "has_patrol_mission",
             "inside_patrol_area",
+            "sonobuoy_deployment_due",
         )
         for field_name in bool_fields:
             if type(getattr(self, field_name)) is not bool:
@@ -369,6 +375,8 @@ class ReasoningFacts:
             "target_lat",
             "altitude_above_sea_m",
             "fuel_percentage",
+            "sonobuoy_track_distance_km",
+            "sonobuoy_track_spacing_km",
         )
         for field_name in numeric_fields:
             value = getattr(self, field_name)
@@ -387,6 +395,10 @@ class ReasoningFacts:
             raise ValueError("fire_control_reason 必须是字符串")
         if not isinstance(self.target_quality_signature, str):
             raise ValueError("target_quality_signature 必须是字符串")
+        if self.sonobuoy_track_distance_km < 0.0:
+            raise ValueError("sonobuoy_track_distance_km 必须是非负数")
+        if self.sonobuoy_track_spacing_km <= 0.0:
+            raise ValueError("sonobuoy_track_spacing_km 必须大于 0")
         if self.current_attack_target_id is not None and not isinstance(
             self.current_attack_target_id, str
         ):
@@ -992,10 +1004,11 @@ class SymbolicReasoningAgent:
             and facts.inside_patrol_area
             and 0.0 <= facts.altitude_above_sea_m <= 500.0
             and facts.sonobuoy_count > 0
+            and facts.sonobuoy_deployment_due
         )
         if record(
             "R-BUOY-001",
-            "巡逻机在任务区内、距海面 0 至 500 m 且有浮标库存时部署浅层主动声呐浮标",
+            "巡逻机在任务区内、距海面 0 至 500 m、有库存且沿航迹达到固定间隔时部署浅层主动声呐浮标",
             buoy_allowed,
             (
                 "is_patrol_aircraft={}".format(facts.is_patrol_aircraft),
@@ -1005,18 +1018,28 @@ class SymbolicReasoningAgent:
                     facts.altitude_above_sea_m
                 ),
                 "sonobuoy_count={}".format(facts.sonobuoy_count),
+                "sonobuoy_deployment_due={}".format(
+                    facts.sonobuoy_deployment_due
+                ),
+                "sonobuoy_track_distance_km={:.3f}".format(
+                    facts.sonobuoy_track_distance_km
+                ),
+                "sonobuoy_track_spacing_km={:.3f}".format(
+                    facts.sonobuoy_track_spacing_km
+                ),
                 "sonobuoy_mode=ACTIVE_SHALLOW",
             ),
         ):
             return self._decision(
                 Conclusion.DEPLOY_SONOBUOY,
                 "R-BUOY-001",
-                "巡逻区域、高度和库存条件均满足，部署浅层主动声呐浮标",
+                "巡逻区域、高度、库存和航迹间隔条件均满足，部署浅层主动声呐浮标",
                 (
                     "patrol_aircraft=True",
                     "inside_patrol_area=True",
                     "0<=altitude_above_sea_m<=500",
                     "sonobuoy_count>0",
+                    "sonobuoy_track_distance_km>=sonobuoy_track_spacing_km_or_first_deployment",
                     "passiveOrActive=True",
                     "shallowOrDeep=True",
                 ),

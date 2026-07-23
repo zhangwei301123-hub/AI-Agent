@@ -907,6 +907,9 @@ own_platform_role
 has_patrol_mission
 own_altitude_above_sea_m
 sonobuoy_available
+sonobuoy_deployment_due
+sonobuoy_track_distance_km
+sonobuoy_track_spacing_km
 incoming_missile
 ```
 
@@ -918,6 +921,8 @@ AND has_patrol_mission == True
 AND inside_patrol_area == True
 AND 0m <= own_altitude_above_sea_m <= 500m
 AND sonobuoy_available == True
+AND (first_successful_deployment == True
+     OR sonobuoy_track_distance_km >= sonobuoy_track_spacing_km)
 AND incoming_missile == False
 THEN deploy_sonobuoy_allowed = True
 AND passiveOrActive = True
@@ -934,17 +939,21 @@ ELSE deploy_sonobuoy_allowed = False
 5. 紧急导弹规避时禁止部署浮标；
 6. 本规则替代旧代码中的 `altitude > 150英尺 × 0.3048` 条件。
 7. 只部署浅层主动声呐浮标：`passiveOrActive=True`、`shallowOrDeep=True`；
-8. 不使用已有浮标覆盖范围阻断部署；只要库存仍大于0，就允许继续部署。
+8. 不读取、不使用附近已有浮标及其有效期阻断部署；
+9. 首次满足任务、高度和库存条件时立即部署；此后仅在该飞机自上次成功部署后沿航迹累计达到 `14.816 km` 时再次部署；
+10. `14.816 km` 为原 `7.408 km` 间距的 2 倍；RPC 部署失败时不清零累计航程；
+11. 航迹采用相邻态势点的分段距离累计，因此飞机绕航返回旧位置时，仍可按累计航程再次部署。
 
 **推理路径示例（允许部署）：**
 
 ```text
-输入：巡逻机 H1；承担巡逻任务；位于巡逻区边界；距海面高度=480m；浮标数量=3；无导弹威胁
+输入：巡逻机 H1；承担巡逻任务；位于巡逻区边界；距海面高度=480m；浮标数量=3；首次部署；无导弹威胁
 1. R-BUOY-001：PATROL_AIRCRAFT 且 has_patrol_mission=True        → 通过
 2. R-BUOY-001：inside_patrol_area=True（边界计入）               → 通过
 3. R-BUOY-001：0 <= 480 <= 500                                  → 通过
 4. R-BUOY-001：sonobuoy_available=True                           → 通过
-5. R-BUOY-001：incoming_missile=False                            → 通过
+5. R-BUOY-001：first_successful_deployment=True                  → 通过
+6. R-BUOY-001：incoming_missile=False                            → 通过
 结论：DEPLOY_SONOBUOY，浅层主动（True, True）
 依据：R-BUOY-001
 ```

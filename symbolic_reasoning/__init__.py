@@ -8,6 +8,7 @@ from .agent import (
     InferenceStep,
     ReasoningFacts,
     RunResult,
+    SONOBUOY_TRACK_SPACING_KM,
     SymbolicReasoningAgent,
     TargetEvaluation,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "InferenceStep",
     "ReasoningFacts",
     "RunResult",
+    "SONOBUOY_TRACK_SPACING_KM",
     "SymbolicReasoningAgent",
     "TargetEvaluation",
     "FrontendControl",

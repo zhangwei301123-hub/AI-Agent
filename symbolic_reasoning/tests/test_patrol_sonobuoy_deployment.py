@@ -5,6 +5,7 @@ from symbolic_reasoning.agent import (
     ACTION_DISABLED,
     ACTION_THRESHOLD,
     Conclusion,
+    SONOBUOY_TRACK_SPACING_KM,
     SONOBUOY_ACTOR,
     WAYPOINT_ACTOR,
 )
@@ -75,6 +76,16 @@ class BuoyStub:
 
 
 class PatrolSonobuoyDeploymentTests(unittest.TestCase):
+    @staticmethod
+    def _successful_executor(actions, *args, **kwargs):
+        return (
+            {"asw-aircraft-1": [False] * 6 + [True, False]},
+            {"asw-aircraft-1": [0.0] * 8},
+        )
+
+    def test_track_spacing_is_twice_the_previous_spacing(self):
+        self.assertEqual(14.816, SONOBUOY_TRACK_SPACING_KM)
+
     def test_unique_patrol_mission_is_inferred_without_unit_mission_id(self):
         env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
 
@@ -194,22 +205,81 @@ class PatrolSonobuoyDeploymentTests(unittest.TestCase):
         self.assertTrue(stub.request.passiveOrActive)
         self.assertTrue(stub.request.shallowOrDeep)
 
-    def test_successful_deployment_does_not_block_next_inventory_based_decision(self):
+    def test_successful_deployment_blocks_until_track_spacing_is_reached(self):
         env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
 
         env.step(
             _payload(_aircraft()),
             execute_commands=True,
-            executor=lambda actions, *args, **kwargs: (
-                {"asw-aircraft-1": [False] * 6 + [True, False]},
-                {"asw-aircraft-1": [0.0] * 8},
-            ),
+            executor=self._successful_executor,
         )
         second = env.step(_payload(_aircraft()), execute_commands=False)
 
         self.assertEqual(
             second.decisions["asw-aircraft-1"].conclusion,
+            Conclusion.HOLD,
+        )
+        self.assertFalse(
+            second.facts["asw-aircraft-1"].sonobuoy_deployment_due
+        )
+
+    def test_cumulative_track_distance_releases_next_deployment(self):
+        env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
+        env.step(
+            _payload(_aircraft()),
+            execute_commands=True,
+            executor=self._successful_executor,
+        )
+
+        before_spacing = env.step(
+            _payload(_aircraft(lat=30.56)),
+            execute_commands=False,
+        )
+        after_spacing = env.step(
+            _payload(_aircraft(lat=30.64)),
+            execute_commands=False,
+        )
+
+        self.assertEqual(
+            Conclusion.HOLD,
+            before_spacing.decisions["asw-aircraft-1"].conclusion,
+        )
+        self.assertEqual(
             Conclusion.DEPLOY_SONOBUOY,
+            after_spacing.decisions["asw-aircraft-1"].conclusion,
+        )
+        self.assertGreaterEqual(
+            after_spacing.facts["asw-aircraft-1"].sonobuoy_track_distance_km,
+            SONOBUOY_TRACK_SPACING_KM,
+        )
+
+    def test_route_revisit_deploys_without_checking_nearby_buoys(self):
+        env = SymbolicReasoningEnv(max_entities=8, mission_areas=MISSION)
+        env.step(
+            _payload(_aircraft()),
+            execute_commands=True,
+            executor=self._successful_executor,
+        )
+
+        outbound = env.step(
+            _payload(_aircraft(lat=30.575)),
+            execute_commands=False,
+        )
+        revisited = env.step(
+            _payload(
+                _aircraft(),
+                _buoy("AN/SSQ-62B 主动声呐浮标", 120.5, 30.5),
+            ),
+            execute_commands=False,
+        )
+
+        self.assertEqual(
+            Conclusion.HOLD,
+            outbound.decisions["asw-aircraft-1"].conclusion,
+        )
+        self.assertEqual(
+            Conclusion.DEPLOY_SONOBUOY,
+            revisited.decisions["asw-aircraft-1"].conclusion,
         )
 
 

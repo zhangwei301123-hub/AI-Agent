@@ -23,6 +23,7 @@ from .agent import (
     Decision,
     ReasoningFacts,
     RETURN_FUEL_THRESHOLD_PCT,
+    SONOBUOY_TRACK_SPACING_KM,
     SymbolicReasoningAgent,
     TargetEvaluation,
 )
@@ -79,6 +80,14 @@ class PatrolContext:
     mission_id: str = ""
 
 
+@dataclass
+class SonobuoyTrackState:
+    last_longitude: float
+    last_latitude: float
+    distance_since_deployment_km: float = 0.0
+    has_successful_deployment: bool = False
+
+
 class SymbolicReasoningEnv:
     """完成“编码 → 校验 → 规则匹配 → 推理 → 默认实际执行”。"""
 
@@ -92,6 +101,7 @@ class SymbolicReasoningEnv:
         mission_areas: Optional[Mapping[str, Any]] = None,
         engagement_state: Optional[EngagementState] = None,
         weapon_fire_prechecker: Optional[WeaponFirePrecheckBackend] = None,
+        sonobuoy_track_spacing_km: float = SONOBUOY_TRACK_SPACING_KM,
     ) -> None:
         if not 0.0 < aim_tolerance_deg <= 180.0:
             raise ValueError("aim_tolerance_deg 必须位于 (0, 180]")
@@ -101,6 +111,8 @@ class SymbolicReasoningEnv:
             weapon_fire_prechecker
         ):
             raise ValueError("weapon_fire_prechecker 必须可调用或为 None")
+        if sonobuoy_track_spacing_km <= 0.0:
+            raise ValueError("sonobuoy_track_spacing_km 必须大于 0")
         self.encoder = EntityEncoder(max_entities=max_entities)
         self.agent = SymbolicReasoningAgent()
         self.aim_tolerance_deg = float(aim_tolerance_deg)
@@ -110,6 +122,8 @@ class SymbolicReasoningEnv:
         self.mission_areas = dict(mission_areas or {})
         self.engagement_state = engagement_state or EngagementState()
         self.weapon_fire_prechecker = weapon_fire_prechecker
+        self.sonobuoy_track_spacing_km = float(sonobuoy_track_spacing_km)
+        self._sonobuoy_tracks: Dict[str, SonobuoyTrackState] = {}
         self._geometry_cache: Dict[int, Tuple[float, float]] = {}
         self.current_step = 0
 
@@ -128,6 +142,7 @@ class SymbolicReasoningEnv:
         ):
             raise ValueError("time_compression_multiplier 必须是正整数")
         situation = self.encoder.encode(payload)
+        self._update_sonobuoy_tracks(situation)
         # 冷却时钟按当前 UI 时间压缩倍率推进。例如 50 倍速时，每处理一份
         # 新态势，600 帧剩余量减少 50；暂停期间不调用 step，因此不会推进。
         current_frame = self.current_step + time_compression_multiplier
@@ -152,6 +167,9 @@ class SymbolicReasoningEnv:
             )
             self._record_successful_lifecycle_actions(
                 decisions, execution_status, current_frame
+            )
+            self._record_successful_sonobuoy_deployments(
+                situation, decisions, execution_status
             )
         else:
             decisions, actions_dict = self.agent.build_actions(facts.values())
@@ -266,6 +284,18 @@ class SymbolicReasoningEnv:
             }
             incoming = self._find_incoming_missile(own, targets)
             patrol = self._patrol_context(own)
+            sonobuoy_track = self._sonobuoy_tracks.get(own.command_id)
+            sonobuoy_track_distance_km = (
+                sonobuoy_track.distance_since_deployment_km
+                if sonobuoy_track is not None
+                else 0.0
+            )
+            sonobuoy_deployment_due = (
+                sonobuoy_track is None
+                or not sonobuoy_track.has_successful_deployment
+                or sonobuoy_track_distance_km + 1e-9
+                >= self.sonobuoy_track_spacing_km
+            )
             patrol_facts = {
                 "is_patrol_aircraft": patrol.is_patrol_aircraft,
                 "has_patrol_mission": patrol.has_patrol_mission,
@@ -273,6 +303,9 @@ class SymbolicReasoningEnv:
                 "mission_id": patrol.mission_id,
                 "altitude_above_sea_m": own.altitude_m,
                 "sonobuoy_count": own.sonobuoy_count,
+                "sonobuoy_deployment_due": sonobuoy_deployment_due,
+                "sonobuoy_track_distance_km": sonobuoy_track_distance_km,
+                "sonobuoy_track_spacing_km": self.sonobuoy_track_spacing_km,
             }
             if incoming is not None:
                 evade_lon, evade_lat = self._destination_point(
@@ -758,6 +791,76 @@ class SymbolicReasoningEnv:
             if is_patrol:
                 candidates.append((str(mission_id), info))
         return candidates[0] if len(candidates) == 1 else None
+
+    def _update_sonobuoy_tracks(self, situation: EncodedSituation) -> None:
+        """Accumulate travelled path length without inspecting nearby buoys."""
+
+        for entity in situation.own_entities:
+            if not entity.is_aircraft:
+                continue
+            track = self._sonobuoy_tracks.get(entity.command_id)
+            if track is None:
+                self._sonobuoy_tracks[entity.command_id] = SonobuoyTrackState(
+                    last_longitude=entity.longitude,
+                    last_latitude=entity.latitude,
+                )
+                continue
+            track.distance_since_deployment_km += self._ground_distance_km(
+                track.last_longitude,
+                track.last_latitude,
+                entity.longitude,
+                entity.latitude,
+            )
+            track.last_longitude = entity.longitude
+            track.last_latitude = entity.latitude
+
+    def _record_successful_sonobuoy_deployments(
+        self,
+        situation: EncodedSituation,
+        decisions: Mapping[str, Decision],
+        execution_status: Mapping[str, str],
+    ) -> None:
+        """Reset path spacing only after the deployment RPC succeeds."""
+
+        for entity_id, decision in decisions.items():
+            if decision.conclusion is not Conclusion.DEPLOY_SONOBUOY:
+                continue
+            if execution_status.get(entity_id) != "SUCCESS":
+                continue
+            entity = situation.find_entity(entity_id)
+            if entity is None:
+                continue
+            track = self._sonobuoy_tracks.get(entity_id)
+            if track is None:
+                track = SonobuoyTrackState(
+                    last_longitude=entity.longitude,
+                    last_latitude=entity.latitude,
+                )
+                self._sonobuoy_tracks[entity_id] = track
+            track.last_longitude = entity.longitude
+            track.last_latitude = entity.latitude
+            track.distance_since_deployment_km = 0.0
+            track.has_successful_deployment = True
+
+    @staticmethod
+    def _ground_distance_km(
+        lon1: float, lat1: float, lon2: float, lat2: float
+    ) -> float:
+        """Great-circle distance used for cumulative aircraft track length."""
+
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = lat2_rad - lat1_rad
+        delta_lon = math.radians(lon2 - lon1)
+        haversine = (
+            math.sin(delta_lat / 2.0) ** 2
+            + math.cos(lat1_rad)
+            * math.cos(lat2_rad)
+            * math.sin(delta_lon / 2.0) ** 2
+        )
+        return 2.0 * 6371.0088 * math.asin(
+            min(1.0, math.sqrt(max(0.0, haversine)))
+        )
 
     def _record_successful_attacks(
         self,
