@@ -1318,7 +1318,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--steps",
         type=int,
-        default=1,
+        default=0,
         help="循环次数；0 或负数表示持续运行",
     )
     parser.add_argument(

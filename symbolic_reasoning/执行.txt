@@ -2,3 +2,7 @@ python -m symbolic_reasoning.symbolic_reasoning4test `
   --live `
   --steps 0 `
   --attack-rpc-target 10.2.0.106:50051
+
+
+带推理路径、命中规则和事实依据的推理结果
+python -m symbolic_reasoning.symbolic_reasoning4test --live --verbose-reasoning
